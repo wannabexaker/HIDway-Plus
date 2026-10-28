@@ -1,0 +1,16 @@
+# HIDway updater settings, read by hidway-update.
+# Installed as /etc/hidway/update.conf (never overwritten by updates).
+
+# Repository the Pi follows, over HTTPS (no credentials for a public repo).
+# install.sh fills this in from the checkout it was run from.
+HIDWAY_REPO=<repository-url>
+
+# What to deploy:
+#   latest-tag   the newest release tag vX.Y.Z (recommended: deploying is a
+#                deliberate act; pushes to main never reach the Pi)
+#   <branch>     e.g. main - every commit that touches the relay is deployed
+HIDWAY_REF=latest-tag
+
+# Number of built releases kept for rollback (the current and the previous
+# release are always kept).
+HIDWAY_KEEP=3

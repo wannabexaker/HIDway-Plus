@@ -1,0 +1,9 @@
+# Normalize text in Git; binary assets are detected automatically.
+*               text=auto
+# Shell scripts and units run on Linux: keep LF even in Windows checkouts.
+*.sh            text eol=lf
+relay/deploy/*  text eol=lf
+relay/Makefile  text eol=lf
+# Windows scripts: CRLF in every checkout and in release archives.
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf

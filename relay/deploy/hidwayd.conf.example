@@ -1,0 +1,37 @@
+# HIDway relay settings, read by hidwayd.service.
+# Installed as /etc/hidway/hidwayd.conf (never overwritten by updates).
+# Replace every <placeholder>, then: sudo systemctl enable --now hidwayd
+# (or let the installer do it, e.g.
+#  sudo relay/deploy/install.sh --configure --bind auto --allow <client-tailscale-ip>)
+
+# Tailscale address of this Pi; hidwayd listens on this address only.
+HIDWAY_BIND=<pi-tailscale-ip>
+
+# Tailscale address of the remote PC; packets from any other source are dropped.
+HIDWAY_ALLOW=<client-tailscale-ip>
+
+HIDWAY_PORT=47800
+
+# Serial device of the Pi -> Pico link. /dev/hidway-serial is created by the
+# udev rule for the Raspberry Pi Debug Probe or the Pi 4 GPIO UART3; for
+# another adapter use its /dev/serial/by-id/... path (and give the hidway
+# group access to it).
+HIDWAY_SERIAL=/dev/hidway-serial
+HIDWAY_BAUD=921600
+
+# Wake-on-LAN for `hidway-wake` (optional): the target PC's MAC address, and
+# where to send the packet: the target's broadcast address on this network
+# (default 255.255.255.255:9), or a router that forwards the UDP port to the
+# target. See docs/RELAY.md, "Wake-on-LAN".
+# HIDWAY_WAKE_MAC=aa:bb:cc:dd:ee:ff
+# HIDWAY_WAKE_TO=<router-ip>:9
+
+# Extra options. Remove --quiet to log a once-per-second summary.
+#
+# End-to-end encryption (optional, recommended on any path that is not
+# Tailscale end to end): create a key once, give the client the same key
+# (`key = ...` in hidway.ini), then add --key-file below. See docs/RELAY.md.
+#   sudo sh -c 'umask 027; /opt/hidway/current/hidwayd --gen-key > /etc/hidway/hidwayd.key'
+#   sudo chgrp hidway /etc/hidway/hidwayd.key
+# HIDWAY_EXTRA_OPTS="--quiet --key-file /etc/hidway/hidwayd.key"
+HIDWAY_EXTRA_OPTS="--quiet"

@@ -1,0 +1,117 @@
+# HIDway
+
+Forward Windows keyboard and mouse input through a Raspberry Pi and a Pico USB HID device.
+
+## Overview
+
+HIDway separates input capture from USB delivery. A Windows client captures selected input while armed, a Linux relay sends it over UART, and a Raspberry Pi Pico presents a standard keyboard and mouse to the target computer. Video and audio come from a separate application such as Moonlight or AnyDesk.
+
+Physical, touchpad and virtual/remote input paths are implemented. The 2026-10-28 input preview adds source ownership, explicit routing, bounded click pacing and hold-repeat. Driver-specific and same-machine behavior still requires actual-device acceptance; see [input sources](docs/INPUT_SOURCES.md) and [validation](docs/VALIDATION.md).
+
+## Features
+
+- ARM/disarm controls, global toggle and panic hotkeys, floating badge and tray menu.
+- Standalone input monitor with Windows device names, saved custom labels, Identify, per-device counters and optional injected-event observation; see [monitor](docs/INPUT_MONITOR.md).
+- Connection feedback stays in the HUD, badge, tray status and recent history; Windows notification popups and taskbar flashing are disabled.
+- Independent keyboard/mouse forwarding and Physical, Touchpad, Virtual / remote switches.
+- Explicit Another-PC / This-PC routing, per-source held state and ordered keyboard/mouse transitions.
+- This-PC native cursor placement with Pico keys/clicks/wheels; optional experimental relative Pico movement.
+- Configurable virtual click limit and optional hold-to-repeat by button/source/speed; normal drag when repeat is off.
+- Coalesced waitable sender clock, stale-input cancellation and bounded receiver queues with release priority.
+- Full keyboard/button state and cumulative mouse movement over UDP.
+- Optional authenticated encryption with a shared key; intended deployment over a restricted private network such as Tailscale.
+- Relay and Pico release-on-timeout, serial reconnect, target USB-state reporting and configured Wake-on-LAN.
+- Linux service installation, release updates, health checks and rollback.
+
+## Architecture
+
+```text
+Windows client → UDP → Raspberry Pi relay → UART → Pico → USB HID → target PC
+```
+
+For remote access, AnyDesk supplies input to the Windows client. In same-machine loopback, the first and last computer are the same; the Pi relay and UART link are still required. There is no direct Windows-to-Pico USB command interface.
+
+### Components
+
+| Component | Responsibility |
+|---|---|
+| `client/` | Win32 HUD, capture hooks, Raw Input, configuration and UDP |
+| `common/` | Packet layouts, crypto, framing, key mapping and state helpers |
+| `relay/` | Linux UDP-to-serial service and deployment tools |
+| `firmware/` | Pico UART receiver, watchdog and TinyUSB HID reports |
+
+See [architecture](docs/ARCHITECTURE.md), [relay operations](docs/RELAY.md) and [security](SECURITY.md).
+
+Current test results and hardware limits are in [VALIDATION.md](docs/VALIDATION.md). Follow [INPUT_TESTING.md](docs/INPUT_TESTING.md) for actual-device acceptance.
+
+## Tech Stack
+
+C11, Win32/Winsock, Linux/POSIX, CMake/Ninja, Pico SDK 2.3.1, TinyUSB and vendored Monocypher 4.0.2. Deployment uses shell scripts and systemd; Windows setup uses PowerShell. Firmware builds target Pico, Pico W, Pico 2 and Pico 2 W.
+
+## Installation
+
+For the Windows client and shared tests, open a Visual Studio developer terminal with the C++ workload, CMake and Ninja available. From the repository root:
+
+```powershell
+git clone https://github.com/wannabexaker/HIDway-.git
+cd HIDway-
+cmake -S . -B .scratch/2026-10-26-host -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+cmake --build .scratch/2026-10-26-host
+ctest --test-dir .scratch/2026-10-26-host --output-on-failure
+```
+
+The executable is `client/hidway-client.exe` under that build directory. Use a fresh dated build directory and record it in `.scratch/README.md`. The release archive's `Setup.cmd` expects the packaged executable beside its setup scripts; running the source copy alone does not install a just-built client.
+
+The local input-preview package is in `out/HIDway/`; use `Start-HIDway.cmd`
+there so the executable reads its adjacent configuration. Generated packages
+are ignored and are not guaranteed to exist in a fresh source checkout.
+
+Firmware requires the Pico SDK and Arm GNU toolchain. Set `PICO_SDK_PATH` and `PICO_TOOLCHAIN_PATH` if they are outside the supported local SDK layout. Select the board explicitly:
+
+```powershell
+cmake -S firmware -B .scratch/2026-10-26-pico2 -G Ninja -DPICO_BOARD=pico2 -DHIDWAY_T0=OFF
+cmake --build .scratch/2026-10-26-pico2
+```
+
+Flash the resulting `hidway_fw.uf2` using the board's BOOTSEL drive. `HIDWAY_T0=ON` builds the separate BOOTSEL-driven input test, not the normal relay mode.
+
+Install/configure the Pi using [RELAY.md](docs/RELAY.md). The input-source and click-queue test dependencies are included in the relay Makefile. A passing Windows CMake test does not validate the Linux build/deployment path; run those checks on Linux too.
+
+## Usage
+
+1. Connect Pico UART0 (GP0 TX, GP1 RX) to the Pi serial link with crossed TX/RX and common ground; use compatible 3.3 V signalling. Connect Pico USB to the target PC.
+2. Configure the relay's private bind address, allowed client and serial device. Match encryption settings on both ends.
+3. Start the client from its configuration directory. Set the relay address/port and verify status before arming. The default address is a placeholder.
+4. Start with Physical enabled. ARM forwards input; `Ctrl+Shift+F12` toggles and `Ctrl+Alt+Shift+End` disarms immediately. Hotkeys are configurable.
+5. Disarm before changing sources or configuration. See [input sources](docs/INPUT_SOURCES.md) for remote and loopback behaviour and limitations.
+
+`hidway.ini` is currently relative to the **working directory**, not necessarily the executable directory. Keep that directory consistent, including shortcuts. An encryption key stored there is a plaintext local secret.
+
+## Project Structure
+
+```text
+client/        Windows application
+common/        Shared C modules and vendored crypto
+firmware/      Pico project
+relay/         Linux daemon and deployment
+tests/         Shared, relay fail-safe and installer tests
+tools/         Build, setup, probe and packaging tools
+docs/          Architecture, operations, checklist and roadmap
+.scratch/      Ignored local builds and working material
+```
+
+## Notes
+
+- USB keyboard output is six non-modifier keys plus modifiers (6KRO), despite the larger wire bitmap.
+- Requested send rate is not a measured delivery guarantee; a waitable-clock thread posts coalesced wakes to the GUI, which still owns capture state and transport.
+- Development USB IDs are `CAFE:4877`; no compatibility with a particular application or security policy is guaranteed.
+- Historical checklist results describe earlier runs, not validation of this snapshot. See [roadmap](docs/ROADMAP.md).
+- Code is distributed under the [MIT license](LICENSE); vendored components retain their own notices.
+
+## Future Improvements
+
+- Validate touchpad/AnyDesk capture and loopback on physical hardware.
+- Complete real AutoClicker/repeat, failure and extended soak acceptance.
+- Improve silent-hook-loss detection where the Windows API permits it.
+- Evaluate negotiated reliable edges if measured UDP loss justifies the change.
+- Measure latency under stream load and migrate configuration to a stable per-user path.

@@ -1,0 +1,83 @@
+# Build output
+build/
+build-*/
+out/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.a
+*.lib
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Testing/
+_deps/
+relay/hidwayd
+relay/hidway_tests
+relay/failsafe_test
+relay/input_tests
+relay/serial_queue_tests
+
+# IDE / tooling
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local configuration and secrets (never commit)
+*.local.ini
+hidway.ini
+hidwayd.conf
+update.conf
+*.key
+*.pem
+*.crt
+*.log
+secrets/
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+credentials/
+hidway-input-monitor.ini
+hidway-input-monitor.ini.tmp
+aggregate-counts.json
+aggregate-counts.tmp
+monitor-test-aliases.ini*
+
+# Private development notes and local setup photographs
+/CLAUDE.md
+/AGENTS.md
+/docs/CHECKLIST.md
+/docs/repo_hygiene_report.md
+/docs/images/hardware.jpg
+/docs/images/hardware-leds.jpg
+
+# Editor/OS temporary files
+desktop.ini
+*.tmp
+*.swp
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local working files (plans, drafts, test output)
+.scratch/

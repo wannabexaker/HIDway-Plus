@@ -1,0 +1,52 @@
+#ifndef HIDWAY_CLIENT_CONFIG_H
+#define HIDWAY_CLIENT_CONFIG_H
+
+#include <stddef.h>
+
+/* A hotkey as Win32 RegisterHotKey() inputs, plus its text form for display. */
+typedef struct {
+    unsigned mods; /* MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN */
+    unsigned vk;   /* virtual-key code */
+    char text[40];
+} hidway_hotkey_t;
+
+typedef struct {
+    char target[128];       /* Tailscale IP / hostname of the relay */
+    int port;               /* UDP port of hidwayd */
+    int send_rate_hz;       /* state send rate while armed */
+    int auto_disarm_ms;     /* auto-disarm if the link is silent this long (0 = off) */
+    int relay_keyboard;     /* relay keyboard input */
+    int relay_mouse;        /* relay mouse input */
+    int source_physical;    /* hardware keyboard / relative mouse */
+    int source_touchpad;    /* absolute-position mouse/touchpad reports */
+    int source_virtual;     /* injected/device-less input (AnyDesk etc.) */
+    int loopback_mode;      /* 0: another PC, 1: injected-only return to this PC */
+    int loopback_pointer_pico; /* opt-in relative HID motion; default native cursor placement */
+    int virtual_click_cps;  /* 1..25 accepted clicks/sec per virtual button */
+    int repeat_enabled;     /* hold selected button to generate paced clicks */
+    int repeat_button;      /* 0..4: left, right, middle, back, forward */
+    int repeat_cps;         /* 1..25 requested clicks/sec */
+    int repeat_sources;     /* bitmask: physical=1, touchpad=2, virtual=4 */
+    int history_enabled;    /* record recent-input history in the UI */
+    hidway_hotkey_t toggle; /* arm/disarm hotkey */
+    hidway_hotkey_t panic;  /* release everything + disarm */
+    hidway_hotkey_t mouse4; /* key that acts as mouse button 4 while armed (vk 0 = none) */
+    hidway_hotkey_t mouse5; /* key that acts as mouse button 5 while armed (vk 0 = none) */
+    int window_x, window_y; /* last window position; INT_MIN = unset */
+    int badge;              /* show the badge while disarmed (click to arm) */
+    int badge_x, badge_y;   /* badge top centre on screen; INT_MIN = unset */
+    char loopback_device[64]; /* Raw Input path token excluded from capture */
+    char key_hex[80];       /* end-to-end key (64 hex chars); empty = encryption off */
+} hidway_config_t;
+
+/* Load from `path`. Missing file/keys keep defaults; always fully populated.
+ * Returns 1 if a file was read, else 0. */
+int hidway_config_load(const char *path, hidway_config_t *cfg);
+
+/* Write the config back to `path`. Returns 1 on success. */
+int hidway_config_save(const char *path, const hidway_config_t *cfg);
+
+/* Parse "ctrl+shift+f12" into a hotkey. Returns 1 on success. */
+int hidway_hotkey_parse(const char *s, hidway_hotkey_t *hk);
+
+#endif /* HIDWAY_CLIENT_CONFIG_H */

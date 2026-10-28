@@ -1,0 +1,60 @@
+# hidwayd - Raspberry Pi relay. Plain C, no external dependencies.
+#   make            build ./hidwayd (version taken from git)
+#   make check      build and run the common/ unit tests
+#   make failsafe   run the fail-safe tests against the real relay (timing
+#                   based; Linux; not part of `check`, which gates deployment)
+#   make run        build and run (bind 0.0.0.0:47800, verbose, no serial)
+#   make clean
+#
+# Deployment on the Pi (service, udev rule, auto-update) is handled by
+# deploy/install.sh; see docs/RELAY.md.
+
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -std=c11
+CPPFLAGS += -I../common
+
+VERSION ?= $(shell git -C .. describe --always --dirty --tags 2>/dev/null || echo dev)
+CPPFLAGS += -DHIDWAY_VERSION='"$(VERSION)"'
+
+COMMON  = ../common/serial.c ../common/cobs.c ../common/crc16.c \
+          ../common/hidway_crypto.c ../common/vendor/monocypher/monocypher.c
+HEADERS = ../common/protocol.h ../common/hidway_kbd.h ../common/serial.h \
+          ../common/cobs.h ../common/crc16.h ../common/hidway_crypto.h \
+          ../common/vendor/monocypher/monocypher.h
+
+TEST_SRC = ../tests/test_common.c ../common/hidway_kbd.c ../common/hidway_motion.c \
+           ../common/hidway_input_source.c ../common/hidway_click_queue.c \
+           ../common/keymap_sc2hid.c $(COMMON)
+
+hidwayd: hidwayd.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ hidwayd.c $(COMMON)
+
+hidway_tests: $(TEST_SRC) $(HEADERS) ../common/hidway_motion.h ../common/keymap_sc2hid.h \
+             ../common/hidway_input_source.h ../common/hidway_click_queue.h ../common/hidway_status_order.h
+	$(CC) $(CFLAGS) -I../common -o $@ $(TEST_SRC)
+
+FAILSAFE_SRC = ../tests/relay/failsafe.c ../common/serial.c ../common/cobs.c ../common/crc16.c
+
+failsafe_test: $(FAILSAFE_SRC) $(HEADERS)
+	$(CC) $(CFLAGS) -I../common -o $@ $(FAILSAFE_SRC)
+
+.PHONY: check failsafe run clean
+input_tests: ../tests/test_input_state.c ../common/hidway_input_state.c ../common/hidway_input_state.h ../common/hidway_input_source.h $(HEADERS)
+	$(CC) $(CFLAGS) -I../common -o $@ ../tests/test_input_state.c ../common/hidway_input_state.c
+
+serial_queue_tests: ../tests/relay/test_serial_queue.c hidwayd.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ ../tests/relay/test_serial_queue.c $(COMMON)
+
+check: hidway_tests input_tests serial_queue_tests
+	./hidway_tests
+	./input_tests
+	./serial_queue_tests
+
+failsafe: hidwayd failsafe_test
+	./failsafe_test ./hidwayd
+
+run: hidwayd
+	./hidwayd
+
+clean:
+	rm -f hidwayd hidway_tests failsafe_test input_tests serial_queue_tests

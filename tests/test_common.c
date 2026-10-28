@@ -1,0 +1,730 @@
+/* Host unit tests for common/ (built with the host compiler, run by ctest). */
+#include <stdio.h>
+#include <string.h>
+
+#include "cobs.h"
+#include "crc16.h"
+#include "hidway_crypto.h"
+#include "hidway_input_source.h"
+#include "hidway_click_queue.h"
+#include "hidway_status_order.h"
+#include "hidway_kbd.h"
+#include "hidway_motion.h"
+#include "keymap_sc2hid.h"
+#include "protocol.h"
+#include "serial.h"
+
+static int failures;
+
+#define CHECK(cond)                                                    \
+    do {                                                               \
+        if (!(cond)) {                                                 \
+            printf("%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
+            failures++;                                                \
+        }                                                              \
+    } while (0)
+
+#define KEY_A 0x04
+#define KEY_B 0x05
+#define KEY_C 0x06
+#define KEY_D 0x07
+#define KEY_E 0x08
+#define KEY_F 0x09
+#define KEY_W 0x1A
+
+static int slot_count(const hidway_kro6_t *k)
+{
+    int n = 0;
+    for (int i = 0; i < HIDWAY_BOOT_KEYS; i++)
+        if (k->slots[i])
+            n++;
+    return n;
+}
+
+static int has_slot(const hidway_kro6_t *k, uint8_t usage)
+{
+    for (int i = 0; i < HIDWAY_BOOT_KEYS; i++)
+        if (k->slots[i] == usage)
+            return 1;
+    return 0;
+}
+
+static void test_bitmap(void)
+{
+    uint8_t bm[HIDWAY_KEY_BITMAP_BYTES] = {0};
+    CHECK(HIDWAY_KEY_BITMAP_BYTES == 21);
+    hidway_bitmap_set(bm, KEY_W);
+    hidway_bitmap_set(bm, HIDWAY_KEY_USAGE_MAX);
+    CHECK(hidway_bitmap_test(bm, KEY_W));
+    CHECK(hidway_bitmap_test(bm, HIDWAY_KEY_USAGE_MAX));
+    CHECK(!hidway_bitmap_test(bm, KEY_A));
+    hidway_bitmap_set(bm, 0xE0); /* out of range: modifiers travel separately */
+    CHECK(!hidway_bitmap_test(bm, 0xE0));
+    hidway_bitmap_clear(bm, KEY_W);
+    CHECK(!hidway_bitmap_test(bm, KEY_W));
+}
+
+static void test_kro6_basic(void)
+{
+    hidway_kro6_t k;
+    uint8_t bm[HIDWAY_KEY_BITMAP_BYTES] = {0};
+    hidway_kro6_reset(&k);
+
+    CHECK(!hidway_kro6_update(&k, bm));
+    CHECK(slot_count(&k) == 0);
+
+    hidway_bitmap_set(bm, KEY_W);
+    CHECK(hidway_kro6_update(&k, bm));
+    CHECK(k.slots[0] == KEY_W && slot_count(&k) == 1);
+    CHECK(!hidway_kro6_update(&k, bm)); /* same state: no change */
+
+    hidway_bitmap_clear(bm, KEY_W);
+    CHECK(hidway_kro6_update(&k, bm));
+    CHECK(slot_count(&k) == 0);
+}
+
+static void test_kro6_reserved_usages_ignored(void)
+{
+    hidway_kro6_t k;
+    uint8_t bm[HIDWAY_KEY_BITMAP_BYTES] = {0};
+    hidway_kro6_reset(&k);
+    bm[0] = 0x0F; /* usages 0x00..0x03: none / error codes */
+    CHECK(!hidway_kro6_update(&k, bm));
+    CHECK(slot_count(&k) == 0);
+}
+
+static void test_kro6_rollover_keeps_held_keys(void)
+{
+    hidway_kro6_t k;
+    uint8_t bm[HIDWAY_KEY_BITMAP_BYTES] = {0};
+    hidway_kro6_reset(&k);
+
+    /* W held first, then six more keys: W must never be dropped. */
+    hidway_bitmap_set(bm, KEY_W);
+    hidway_kro6_update(&k, bm);
+    const uint8_t extra[] = {KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F};
+    for (size_t i = 0; i < sizeof extra; i++) {
+        hidway_bitmap_set(bm, extra[i]);
+        hidway_kro6_update(&k, bm);
+        CHECK(has_slot(&k, KEY_W));
+    }
+    CHECK(slot_count(&k) == 6);
+    CHECK(!has_slot(&k, KEY_F)); /* 7th key waits */
+
+    /* Releasing one frees a slot for the waiting key; order stays packed. */
+    hidway_bitmap_clear(bm, KEY_B);
+    CHECK(hidway_kro6_update(&k, bm));
+    CHECK(slot_count(&k) == 6);
+    CHECK(has_slot(&k, KEY_F) && !has_slot(&k, KEY_B) && has_slot(&k, KEY_W));
+    CHECK(k.slots[0] == KEY_W);
+
+    /* Packing: no zero before a non-zero slot. */
+    hidway_bitmap_clear(bm, KEY_A);
+    hidway_bitmap_clear(bm, KEY_C);
+    hidway_kro6_update(&k, bm);
+    int seen_zero = 0, ok = 1;
+    for (int i = 0; i < HIDWAY_BOOT_KEYS; i++) {
+        if (k.slots[i] == 0)
+            seen_zero = 1;
+        else if (seen_zero)
+            ok = 0;
+    }
+    CHECK(ok);
+    CHECK(slot_count(&k) == 4);
+
+    memset(bm, 0, sizeof bm);
+    hidway_kro6_update(&k, bm);
+    CHECK(slot_count(&k) == 0);
+}
+
+static void test_motion_chunking(void)
+{
+    hidway_motion_t m, c;
+    hidway_motion_clear(&m);
+    CHECK(!hidway_motion_pending(&m));
+
+    hidway_motion_add(&m, 100000, -40000, 300, -2);
+    CHECK(hidway_motion_pending(&m));
+
+    hidway_motion_take(&m, 32767, 127, &c);
+    CHECK(c.x == 32767 && c.y == -32767 && c.wheel == 127 && c.pan == -2);
+    CHECK(m.x == 100000 - 32767 && m.y == -40000 + 32767 && m.wheel == 173 && m.pan == 0);
+
+    /* Total motion is conserved across chunks. */
+    long sum_x = c.x, sum_y = c.y, sum_w = c.wheel;
+    while (hidway_motion_pending(&m)) {
+        hidway_motion_take(&m, 32767, 127, &c);
+        sum_x += c.x;
+        sum_y += c.y;
+        sum_w += c.wheel;
+    }
+    CHECK(sum_x == 100000 && sum_y == -40000 && sum_w == 300);
+}
+
+static void test_motion_give_back(void)
+{
+    hidway_motion_t m, c;
+    hidway_motion_clear(&m);
+    hidway_motion_add(&m, 10, -3, 1, 0);
+    hidway_motion_take(&m, 127, 127, &c);
+    CHECK(!hidway_motion_pending(&m));
+    hidway_motion_give_back(&m, &c);
+    CHECK(m.x == 10 && m.y == -3 && m.wheel == 1);
+}
+
+static void test_motion_saturation(void)
+{
+    hidway_motion_t m;
+    hidway_motion_clear(&m);
+    for (int i = 0; i < 1000; i++)
+        hidway_motion_add(&m, 0x7FFFFFFF, -0x7FFFFFFF, 0, 0);
+    CHECK(m.x == HIDWAY_MOTION_CAP && m.y == -HIDWAY_MOTION_CAP);
+}
+
+static void test_motion_wheel_limit_zero(void)
+{
+    hidway_motion_t m, c;
+    hidway_motion_clear(&m);
+    hidway_motion_add(&m, 5, 0, 3, 0);
+    hidway_motion_take(&m, 127, 0, &c);
+    CHECK(c.x == 5 && c.wheel == 0);
+    CHECK(m.wheel == 3); /* caller must clear it explicitly (boot protocol) */
+}
+
+static void test_keymap(void)
+{
+    char tmp[8];
+
+    /* Scan code -> usage, layout-independent (position based). */
+    CHECK(hidway_sc_to_usage(0x11, false) == 0x1A); /* W */
+    CHECK(hidway_sc_to_usage(0x1E, false) == 0x04); /* A */
+    CHECK(hidway_sc_to_usage(0x39, false) == 0x2C); /* Space */
+    CHECK(hidway_sc_to_usage(0x1C, false) == 0x28); /* Enter */
+    CHECK(hidway_sc_to_usage(0x58, false) == 0x45); /* F12 */
+    CHECK(hidway_sc_to_usage(0x48, true) == 0x52);  /* Up (extended) */
+    CHECK(hidway_sc_to_usage(0x1C, true) == 0x58);  /* Keypad Enter (extended) */
+
+    /* Modifiers are reported separately, never as usages. */
+    CHECK(hidway_sc_to_usage(0x1D, false) == 0);
+    CHECK(hidway_sc_to_modifier(0x1D, false) == 0x01); /* LCtrl */
+    CHECK(hidway_sc_to_modifier(0x2A, false) == 0x02); /* LShift */
+    CHECK(hidway_sc_to_modifier(0x38, false) == 0x04); /* LAlt */
+    CHECK(hidway_sc_to_modifier(0x1D, true) == 0x10);  /* RCtrl */
+    CHECK(hidway_sc_to_modifier(0x38, true) == 0x40);  /* RAlt */
+    CHECK(hidway_sc_to_modifier(0x5B, true) == 0x08);  /* LGui */
+
+    /* Same code, extended flag changes meaning (RCtrl vs LCtrl). */
+    CHECK(hidway_sc_to_modifier(0x1D, false) != hidway_sc_to_modifier(0x1D, true));
+
+    /* Unmapped / out of range. */
+    CHECK(hidway_sc_to_usage(0x00, false) == 0);
+    CHECK(hidway_sc_to_usage(0xF0, false) == 0);
+    CHECK(hidway_sc_to_modifier(0x11, false) == 0);
+
+    /* Display names. */
+    CHECK(strcmp(hidway_usage_name(0x1A, tmp), "W") == 0);
+    CHECK(strcmp(hidway_usage_name(0x2C, tmp), "Space") == 0);
+    CHECK(strcmp(hidway_usage_name(0x3A, tmp), "F1") == 0);
+    CHECK(strcmp(hidway_usage_name(0x27, tmp), "0") == 0);
+    CHECK(strcmp(hidway_usage_name(0x52, tmp), "Up") == 0);
+}
+
+static void test_protocol_input(void)
+{
+    CHECK(HIDWAY_INPUT_PKT_LEN == 51);
+
+    hidway_input_pkt_t in = {0}, out;
+    in.type = HIDWAY_MSG_STATE;
+    in.session_id = 0xDEADBEEF;
+    in.seq = 0x01020304;
+    in.client_time_us = 123456789;
+    in.mods = 0x05;
+    hidway_bitmap_set(in.keys, 0x1A); /* W */
+    hidway_bitmap_set(in.keys, 0xA7); /* highest usage */
+    in.buttons = 0x13;
+    in.x = -70000;
+    in.y = 65000;
+    in.wheel = -3;
+    in.pan = 7;
+
+    uint8_t buf[HIDWAY_INPUT_PKT_LEN];
+    CHECK(hidway_input_encode(buf, &in) == HIDWAY_INPUT_PKT_LEN);
+    CHECK(buf[0] == 'H' && buf[1] == HIDWAY_PROTO_VER);
+    CHECK(hidway_input_decode(buf, sizeof buf, &out));
+    CHECK(out.session_id == in.session_id && out.seq == in.seq);
+    CHECK(out.client_time_us == in.client_time_us);
+    CHECK(out.mods == in.mods && out.buttons == in.buttons);
+    CHECK(memcmp(out.keys, in.keys, HIDWAY_KEY_BITMAP_BYTES) == 0);
+    CHECK(out.x == -70000 && out.y == 65000); /* beyond int16: needs 32-bit */
+    CHECK(out.wheel == -3 && out.pan == 7);
+
+    /* RELEASE normalizes to nothing held regardless of payload. */
+    uint8_t rel[HIDWAY_INPUT_PKT_LEN];
+    in.type = HIDWAY_MSG_RELEASE;
+    hidway_input_encode(rel, &in);
+    CHECK(hidway_input_decode(rel, sizeof rel, &out));
+    CHECK(out.mods == 0 && out.buttons == 0);
+    for (size_t i = 0; i < HIDWAY_KEY_BITMAP_BYTES; i++)
+        CHECK(out.keys[i] == 0);
+
+    /* WAKE is a valid message (the relay answers it like a PROBE). */
+    uint8_t wk[HIDWAY_INPUT_PKT_LEN];
+    in.type = HIDWAY_MSG_WAKE;
+    hidway_input_encode(wk, &in);
+    CHECK(hidway_input_decode(wk, sizeof wk, &out) && out.type == HIDWAY_MSG_WAKE);
+
+    /* Rejections: wrong length, magic, version, type. */
+    CHECK(!hidway_input_decode(buf, HIDWAY_INPUT_PKT_LEN - 1, &out));
+    uint8_t bad[HIDWAY_INPUT_PKT_LEN];
+    memcpy(bad, buf, sizeof bad);
+    bad[0] = 'X';
+    CHECK(!hidway_input_decode(bad, sizeof bad, &out));
+    memcpy(bad, buf, sizeof bad);
+    bad[1] = 99;
+    CHECK(!hidway_input_decode(bad, sizeof bad, &out));
+    memcpy(bad, buf, sizeof bad);
+    bad[2] = 7;
+    CHECK(!hidway_input_decode(bad, sizeof bad, &out));
+}
+
+static void test_protocol_status(void)
+{
+    CHECK(HIDWAY_STATUS_PKT_LEN == 25);
+    hidway_status_pkt_t in = {0}, out;
+    in.session_id = 0x11223344;
+    in.seq = 999;
+    in.client_time_us = 42;
+    in.frames_ok = 123456;
+    in.seq_gaps = 7;
+    in.flags = 0x0003;
+    in.leds = 0x02;
+
+    uint8_t buf[HIDWAY_STATUS_PKT_LEN];
+    CHECK(hidway_status_encode(buf, &in) == HIDWAY_STATUS_PKT_LEN);
+    CHECK(hidway_status_decode(buf, sizeof buf, &out));
+    CHECK(out.session_id == in.session_id && out.seq == in.seq);
+    CHECK(out.client_time_us == in.client_time_us && out.frames_ok == in.frames_ok);
+    CHECK(out.seq_gaps == in.seq_gaps && out.flags == in.flags && out.leds == in.leds);
+    CHECK(!hidway_status_decode(buf, 4, &out));
+}
+
+static void test_crc16(void)
+{
+    /* CRC-16/CCITT-FALSE test vector: "123456789" -> 0x29B1. */
+    const uint8_t v[] = {'1','2','3','4','5','6','7','8','9'};
+    CHECK(hidway_crc16(v, sizeof v) == 0x29B1);
+    CHECK(hidway_crc16((const uint8_t *)"", 0) == 0xFFFF);
+}
+
+static void cobs_roundtrip(const uint8_t *in, size_t len)
+{
+    uint8_t enc[1024], dec[1024];
+    size_t e = hidway_cobs_encode(in, len, enc);
+    for (size_t i = 0; i < e; i++)
+        CHECK(enc[i] != 0x00); /* encoded data must be zero-free */
+    size_t d = hidway_cobs_decode(enc, e, dec);
+    CHECK(d == len);
+    CHECK(memcmp(dec, in, len) == 0);
+}
+
+static void test_cobs(void)
+{
+    uint8_t a[] = {1, 2, 3};
+    uint8_t b[] = {0, 0, 0};
+    uint8_t c[] = {1, 0, 2, 0, 0, 3};
+    cobs_roundtrip(a, sizeof a);
+    cobs_roundtrip(b, sizeof b);
+    cobs_roundtrip(c, sizeof c);
+
+    /* Long run with no zeros (forces the 0xFF code split at 254). */
+    uint8_t big[600];
+    for (size_t i = 0; i < sizeof big; i++)
+        big[i] = (uint8_t)(i % 7 == 0 ? 0 : (i & 0xFF) | 1);
+    cobs_roundtrip(big, sizeof big);
+
+    uint8_t allnz[300];
+    for (size_t i = 0; i < sizeof allnz; i++)
+        allnz[i] = (uint8_t)((i & 0xFE) | 1);
+    cobs_roundtrip(allnz, sizeof allnz);
+
+    /* A 0x00 inside encoded data is malformed. */
+    uint8_t bad[] = {2, 5, 0, 3};
+    uint8_t out[16];
+    CHECK(hidway_cobs_decode(bad, sizeof bad, out) == 0);
+}
+
+static void test_serial(void)
+{
+    CHECK(HIDWAY_SER_PAYLOAD_LEN == 40);
+
+    hidway_serial_state_t s = {0}, got = {0};
+    s.type = HIDWAY_SER_STATE;
+    s.seq = 0xBEEF;
+    s.mods = 0x11;
+    hidway_bitmap_set(s.keys, 0x1A);
+    hidway_bitmap_set(s.keys, 0x04);
+    s.buttons = 0x0A;
+    s.x = -123456;
+    s.y = 99999;
+    s.wheel = -5;
+    s.pan = 3;
+
+    uint8_t frame[HIDWAY_SER_FRAME_MAX];
+    size_t n = hidway_serial_build(&s, frame, sizeof frame);
+    CHECK(n > 0);
+    CHECK(frame[n - 1] == 0x00); /* delimiter */
+
+    hidway_deframer_t d;
+    hidway_deframer_reset(&d);
+    bool done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done);
+    CHECK(got.type == s.type && got.seq == s.seq && got.mods == s.mods);
+    CHECK(memcmp(got.keys, s.keys, HIDWAY_KEY_BITMAP_BYTES) == 0);
+    CHECK(got.buttons == s.buttons);
+    CHECK(got.x == s.x && got.y == s.y && got.wheel == s.wheel && got.pan == s.pan);
+
+    /* Corruption: flip a byte in the middle -> CRC rejects the frame. */
+    hidway_deframer_reset(&d);
+    frame[3] ^= 0xFF;
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(!done);
+    CHECK(d.bad >= 1); /* counted, for the error LED */
+    frame[3] ^= 0xFF;
+    uint32_t bad = d.bad;
+    hidway_deframer_push(&d, 0x00, &got); /* an empty frame is not an error */
+    CHECK(d.bad == bad);
+
+    /* Leading noise before the first delimiter is skipped cleanly. */
+    hidway_deframer_reset(&d);
+    hidway_deframer_push(&d, 0x11, &got);
+    hidway_deframer_push(&d, 0x22, &got);
+    hidway_deframer_push(&d, 0x00, &got); /* flush garbage */
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done);
+
+    /* A frame cut short (partial write), then the relay's resync delimiter:
+     * the fragment is dropped and the next full frame decodes. */
+    hidway_deframer_reset(&d);
+    for (size_t i = 0; i < n / 2; i++)
+        CHECK(!hidway_deframer_push(&d, frame[i], &got));
+    CHECK(!hidway_deframer_push(&d, 0x00, &got));
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done && got.seq == s.seq);
+
+    /* A bare delimiter (empty frame) is ignored. */
+    hidway_deframer_reset(&d);
+    CHECK(!hidway_deframer_push(&d, 0x00, &got));
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done);
+
+    /* RELEASE normalizes to nothing held. */
+    s.type = HIDWAY_SER_RELEASE;
+    n = hidway_serial_build(&s, frame, sizeof frame);
+    hidway_deframer_reset(&d);
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done && got.mods == 0 && got.buttons == 0);
+    for (size_t i = 0; i < HIDWAY_KEY_BITMAP_BYTES; i++)
+        CHECK(got.keys[i] == 0);
+
+    /* Pico -> Pi target reports share the deframer with state frames. */
+    uint8_t tf[HIDWAY_SER_FRAME_MAX];
+    size_t tn = hidway_serial_build_target(HIDWAY_TARGET_ASLEEP, tf, sizeof tf);
+    CHECK(tn > 0 && tf[tn - 1] == 0x00);
+    CHECK(hidway_serial_build_target(HIDWAY_TARGET_ON, tf, 3) == 0); /* too small */
+    hidway_deframer_reset(&d);
+    done = false;
+    for (size_t i = 0; i < tn; i++)
+        done = hidway_deframer_push(&d, tf[i], &got);
+    CHECK(done && got.type == HIDWAY_SER_TARGET && got.target == HIDWAY_TARGET_ASLEEP);
+    tn=hidway_serial_build_fault(true,tf,sizeof tf);
+    CHECK(tn>0&&hidway_serial_build_fault(true,tf,3)==0);
+    done=false;
+    for(size_t i=0;i<tn;i++)done=hidway_deframer_push(&d,tf[i],&got);
+    CHECK(done&&got.type==HIDWAY_SER_FAULT&&got.target==1);
+    tn=hidway_serial_build_fault(false,tf,sizeof tf);done=false;
+    for(size_t i=0;i<tn;i++)done=hidway_deframer_push(&d,tf[i],&got);
+    CHECK(done&&got.type==HIDWAY_SER_FAULT&&got.target==0);
+
+    /* ...a state frame right after it still decodes. */
+    s.type = HIDWAY_SER_STATE;
+    n = hidway_serial_build(&s, frame, sizeof frame);
+    done = false;
+    for (size_t i = 0; i < n; i++)
+        done = hidway_deframer_push(&d, frame[i], &got);
+    CHECK(done && got.type == HIDWAY_SER_STATE && got.target == 0);
+
+    /* Corrupt or out-of-range target reports are dropped. */
+    tn = hidway_serial_build_target(HIDWAY_TARGET_ON, tf, sizeof tf);
+    tf[1] ^= 0x01;
+    hidway_deframer_reset(&d);
+    done = false;
+    for (size_t i = 0; i < tn; i++)
+        done = hidway_deframer_push(&d, tf[i], &got);
+    CHECK(!done && d.bad == 1);
+    tn = hidway_serial_build_target(7, tf, sizeof tf);
+    hidway_deframer_reset(&d);
+    done = false;
+    for (size_t i = 0; i < tn; i++)
+        done = hidway_deframer_push(&d, tf[i], &got);
+    CHECK(!done);
+}
+
+/* ------------------------------------------------------------- crypto */
+
+#include "vendor/monocypher/monocypher.h"
+
+static int nib(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+static size_t unhex(const char *s, uint8_t *out, size_t cap)
+{
+    size_t n = 0;
+    for (; s[0] && s[1] && n < cap; s += 2) {
+        int hi = nib(s[0]), lo = nib(s[1]);
+        if (hi < 0 || lo < 0)
+            break;
+        out[n++] = (uint8_t)(hi << 4 | lo);
+    }
+    return n;
+}
+
+/* AEAD_XChaCha20_Poly1305 test vector, draft-irtf-cfrg-xchacha-03 A.3.1:
+ * proves the vendored Monocypher implements the standard construction. */
+static void test_xchacha_kat(void)
+{
+    const char *pt_s = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip "
+                       "for the future, sunscreen would be it.";
+    uint8_t key[32], nonce[24], ad[12], exp_ct[114], exp_tag[16], ct[114], tag[16], back[114];
+    CHECK(unhex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", key, 32) == 32);
+    CHECK(unhex("404142434445464748494a4b4c4d4e4f5051525354555657", nonce, 24) == 24);
+    CHECK(unhex("50515253c0c1c2c3c4c5c6c7", ad, 12) == 12);
+    CHECK(unhex("bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb"
+                "731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b452"
+                "2f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff9"
+                "21f9664c97637da9768812f615c68b13b52e", exp_ct, 114) == 114);
+    CHECK(unhex("c0875924c1c7987947deafd8780acf49", exp_tag, 16) == 16);
+    CHECK(strlen(pt_s) == 114);
+
+    crypto_aead_lock(ct, tag, key, nonce, ad, sizeof ad, (const uint8_t *)pt_s, 114);
+    CHECK(memcmp(ct, exp_ct, 114) == 0);
+    CHECK(memcmp(tag, exp_tag, 16) == 0);
+    CHECK(crypto_aead_unlock(back, tag, key, nonce, ad, sizeof ad, ct, 114) == 0);
+    CHECK(memcmp(back, pt_s, 114) == 0);
+}
+
+static void test_seal_open(void)
+{
+    uint8_t key[HIDWAY_KEY_LEN], other[HIDWAY_KEY_LEN], nonce[HIDWAY_NONCE_LEN];
+    for (int i = 0; i < HIDWAY_KEY_LEN; i++) {
+        key[i] = (uint8_t)(i * 7 + 1);
+        other[i] = (uint8_t)(i * 7 + 2);
+    }
+    for (int i = 0; i < HIDWAY_NONCE_LEN; i++)
+        nonce[i] = (uint8_t)(0xA0 + i);
+
+    hidway_input_pkt_t in = {0}, back;
+    in.type = HIDWAY_MSG_STATE;
+    in.session_id = 0x01020304;
+    in.seq = 77;
+    hidway_bitmap_set(in.keys, 0x1A);
+    in.x = -1234;
+    uint8_t plain[HIDWAY_INPUT_PKT_LEN];
+    size_t pl = hidway_input_encode(plain, &in);
+
+    uint8_t env[HIDWAY_SEAL_MAX], out[HIDWAY_SEAL_MAX_INNER];
+    uint64_t ts = 0x0123456789ABCDEFull, ts_back = 0;
+    size_t el = hidway_seal(env, sizeof env, key, nonce, ts, plain, pl);
+    CHECK(el == pl + HIDWAY_SEAL_OVERHEAD);
+    CHECK(hidway_is_sealed(env, el));
+    /* plaintext must not appear on the wire */
+    CHECK(memcmp(env + HIDWAY_SEAL_HDR + HIDWAY_NONCE_LEN + HIDWAY_TS_LEN, plain, pl) != 0);
+    /* a sealed envelope is never mistaken for a plaintext packet */
+    CHECK(!hidway_input_decode(env, el, &back));
+
+    size_t ol = hidway_open(out, sizeof out, key, env, el, &ts_back);
+    CHECK(ol == pl && ts_back == ts);
+    CHECK(hidway_input_decode(out, ol, &back));
+    CHECK(back.seq == 77 && back.x == -1234 && hidway_bitmap_test(back.keys, 0x1A));
+
+    /* wrong key, and any single flipped bit anywhere, are rejected */
+    CHECK(hidway_open(out, sizeof out, other, env, el, NULL) == 0);
+    for (size_t i = 0; i < el; i++) {
+        env[i] ^= 0x01;
+        CHECK(hidway_open(out, sizeof out, key, env, el, NULL) == 0);
+        env[i] ^= 0x01;
+    }
+    CHECK(hidway_open(out, sizeof out, key, env, el, NULL) == pl);
+
+    /* truncation and garbage */
+    CHECK(hidway_open(out, sizeof out, key, env, el - 1, NULL) == 0);
+    CHECK(hidway_open(out, sizeof out, key, env, HIDWAY_SEAL_HDR, NULL) == 0);
+    CHECK(!hidway_is_sealed(plain, pl));
+
+    /* oversized inner packets are refused */
+    uint8_t big[HIDWAY_SEAL_MAX_INNER + 1] = {0};
+    CHECK(hidway_seal(env, sizeof env, key, nonce, 1, big, sizeof big) == 0);
+    CHECK(hidway_seal(env, 10, key, nonce, 1, plain, pl) == 0);
+}
+
+static void test_replay_guard(void)
+{
+    hidway_replay_t r = {0};
+    const uint64_t now = 1700000000000000ull, win = 120000000ull; /* 120 s */
+    CHECK(hidway_replay_accept(&r, now, now, win));
+    CHECK(!hidway_replay_accept(&r, now, now, win));        /* exact replay */
+    CHECK(!hidway_replay_accept(&r, now - 1, now, win));    /* older */
+    CHECK(hidway_replay_accept(&r, now + 1, now, win));     /* newer */
+    CHECK(!hidway_replay_accept(&r, now + win + 10, now, win)); /* future skew */
+    hidway_replay_t fresh = {0};
+    CHECK(!hidway_replay_accept(&fresh, now - win - 1, now, win)); /* stale after restart */
+    CHECK(hidway_replay_accept(&fresh, now - win + 1, now, win));
+    /* the relay starts with its start time as the floor: a packet captured
+     * shortly before a restart is refused although it is inside the window */
+    hidway_replay_t started = {.last_ts_us = now};
+    CHECK(!hidway_replay_accept(&started, now - 5000000ull, now + 1000, win));
+    CHECK(!hidway_replay_accept(&started, now, now + 1000, win));
+    CHECK(hidway_replay_accept(&started, now + 500, now + 1000, win));
+}
+
+static void test_key_text(void)
+{
+    uint8_t k[HIDWAY_KEY_LEN], k2[HIDWAY_KEY_LEN];
+    char hex[2 * HIDWAY_KEY_LEN + 1];
+    for (int i = 0; i < HIDWAY_KEY_LEN; i++)
+        k[i] = (uint8_t)(255 - i * 3);
+    hidway_key_format(k, hex);
+    CHECK(strlen(hex) == 64);
+    CHECK(hidway_key_parse(hex, k2) && memcmp(k, k2, sizeof k) == 0);
+
+    char padded[80];
+    snprintf(padded, sizeof padded, "  %s \r\n", hex);
+    CHECK(hidway_key_parse(padded, k2) && memcmp(k, k2, sizeof k) == 0);
+
+    CHECK(!hidway_key_parse("abcd", k2));               /* too short */
+    hex[10] = 'x';
+    CHECK(!hidway_key_parse(hex, k2));                  /* not hex */
+    hidway_key_format(k, hex);
+    snprintf(padded, sizeof padded, "%sff", hex);
+    CHECK(!hidway_key_parse(padded, k2));               /* too long */
+    CHECK(!hidway_key_parse(NULL, k2));
+}
+
+static void test_input_sources(void)
+{
+    CHECK(hidway_keyboard_source(false) == HIDWAY_SOURCE_PHYSICAL);
+    CHECK(hidway_keyboard_source(true) == HIDWAY_SOURCE_VIRTUAL);
+    CHECK(hidway_mouse_source(true, false) == HIDWAY_SOURCE_PHYSICAL);
+    CHECK(hidway_mouse_source(true, true) == HIDWAY_SOURCE_TOUCHPAD);
+    CHECK(hidway_mouse_source(false, false) == HIDWAY_SOURCE_VIRTUAL);
+    CHECK(hidway_mouse_source(false, true) == HIDWAY_SOURCE_VIRTUAL);
+
+    int32_t previous = 0;
+    bool valid = false;
+    CHECK(hidway_absolute_axis_delta(0, 1920, &previous, &valid) == 0);
+    CHECK(valid && previous == 0);
+    CHECK(hidway_absolute_axis_delta(65535, 1920, &previous, &valid) == 1919);
+    CHECK(hidway_absolute_axis_delta(32768, 1920, &previous, &valid) == -959);
+    CHECK(hidway_absolute_axis_delta(-5, 1920, &previous, &valid) == -960);
+    CHECK(hidway_absolute_axis_delta(70000, 1920, &previous, &valid) == 1919);
+
+    CHECK(hidway_device_path_matches("\\\\?\\HID#VID_CAFE&PID_4877&MI_01", "vid_cafe&pid_4877"));
+    CHECK(!hidway_device_path_matches("\\\\?\\HID#VID_1234&PID_5678", "VID_CAFE&PID_4877"));
+    CHECK(!hidway_device_path_matches(NULL, "VID_CAFE&PID_4877"));
+    CHECK(!hidway_device_path_matches("device", ""));
+}
+
+static void test_click_queue(void)
+{
+    hidway_click_queue_t q;
+    hidway_click_queue_clear(&q);
+    hidway_mouse_frame_t down = {1, 10, 20, 0, 0}, up = {0, 12, 20, 0, 0};
+    CHECK(hidway_click_queue_push(&q, down));
+    CHECK(hidway_click_queue_push(&q, down)); /* duplicate hook/raw state */
+    CHECK(q.count == 1);
+    CHECK(hidway_click_queue_push(&q, up)); /* both edges before next tick */
+    hidway_mouse_frame_t sample = hidway_click_queue_sample(&q, up, 100);
+    CHECK(sample.buttons == 1 && sample.x == 10);
+    CHECK(hidway_click_queue_sample(&q, up, 115).buttons == 1);
+    CHECK(hidway_click_queue_sample(&q, up, 116).buttons == 0);
+    CHECK(q.count == 0);
+    /* Ordinary drag motion continues once the down transition was sent. */
+    CHECK(hidway_click_queue_push(&q, down));
+    CHECK(hidway_click_queue_sample(&q, down, 132).buttons == 1);
+    down.x = 30;
+    CHECK(hidway_click_queue_sample(&q, down, 133).x == 30);
+    hidway_click_queue_clear(&q); /* disarm drops queued input */
+    CHECK(hidway_click_queue_sample(&q, up, 140).buttons == 0);
+    for (unsigned i = 0; i < HIDWAY_CLICK_QUEUE_CAPACITY; i++) {
+        down.buttons = (uint8_t)((i % 2) ? 0 : 1);
+        CHECK(hidway_click_queue_push(&q, down));
+    }
+    down.buttons = 1;
+    CHECK(!hidway_click_queue_push(&q, down)); /* never silently lose a release */
+    hidway_click_queue_clear(&q);
+    CHECK(hidway_click_queue_push(&q, down));
+    CHECK(hidway_click_queue_push(&q, up));
+    CHECK(hidway_click_queue_sample(&q, up, UINT32_MAX - 7).buttons == 1);
+    CHECK(hidway_click_queue_sample(&q, up, 7).buttons == 1);
+    CHECK(hidway_click_queue_sample(&q, up, 8).buttons == 0);
+}
+
+static void test_status_order(void)
+{
+    hidway_status_order_t order = {0};
+    CHECK(hidway_status_order_accept(&order, 1000));
+    CHECK(hidway_status_order_accept(&order, 81000));
+    CHECK(!hidway_status_order_accept(&order, 81000));
+    CHECK(!hidway_status_order_accept(&order, 1000));
+    CHECK(order.last_echo_us == 81000);
+    order = (hidway_status_order_t){UINT32_MAX - 10, true};
+    CHECK(hidway_status_order_accept(&order, 5));
+    CHECK(!hidway_status_order_accept(&order, UINT32_MAX - 10));
+    order = (hidway_status_order_t){0}; /* new endpoint/session baseline */
+    CHECK(hidway_status_order_accept(&order, 100));
+}
+
+int main(void)
+{
+    test_bitmap();
+    test_keymap();
+    test_protocol_input();
+    test_protocol_status();
+    test_crc16();
+    test_cobs();
+    test_serial();
+    test_kro6_basic();
+    test_kro6_reserved_usages_ignored();
+    test_kro6_rollover_keeps_held_keys();
+    test_motion_chunking();
+    test_motion_give_back();
+    test_motion_saturation();
+    test_motion_wheel_limit_zero();
+    test_xchacha_kat();
+    test_seal_open();
+    test_replay_guard();
+    test_key_text();
+    test_input_sources();
+    test_click_queue();
+    test_status_order();
+
+    if (failures) {
+        printf("%d check(s) failed\n", failures);
+        return 1;
+    }
+    printf("all common tests passed\n");
+    return 0;
+}

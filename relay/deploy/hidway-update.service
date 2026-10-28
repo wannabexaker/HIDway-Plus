@@ -1,0 +1,18 @@
+[Unit]
+Description=HIDway relay updater
+Documentation=file:/opt/hidway/src/docs/RELAY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hidway-update --auto
+# Never compete with the Pi's other services: CPU and disk only when idle,
+# bounded memory and time.
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+MemoryMax=256M
+TimeoutStartSec=15min
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes

@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily check for a new HIDway relay release
+Documentation=file:/opt/hidway/src/docs/RELAY.md
+
+[Timer]
+# Once a day at a quiet hour; a missed check (Pi off) runs at the next boot.
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+#include <windows.h>
+#include "hidway_version.h"
+
+/* Application icon (shown in Explorer, the taskbar, Alt-Tab and the titlebar). */
+1 ICON "hidway.ico"
+
+#define HIDWAY_RC_DESCRIPTION "HIDway client"
+#define HIDWAY_RC_FILENAME "hidway-client.exe"
+#include "versioninfo.rc"

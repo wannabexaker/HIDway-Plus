@@ -1,0 +1,51 @@
+# HIDway client configuration.
+# Copy to hidway.ini next to hidway-client.exe and edit.
+
+# Tailscale IP (or MagicDNS name) of the Raspberry Pi running hidwayd.
+target = 100.100.100.100
+port = 47800
+
+# State send rate while ARMED (10..1000 Hz).
+send_rate_hz = 250
+
+# Auto-disarm if the relay goes silent for this long while armed (0 = off).
+auto_disarm_ms = 3000
+
+# Relay keyboard / mouse input (1 = on, 0 = off).
+relay_keyboard = 1
+relay_mouse = 1
+
+# Select which Windows input origins may be forwarded. Physical keeps the
+# previous HIDway behaviour. Touchpad accepts absolute-position Raw Input;
+# virtual accepts injected/device-less input such as AnyDesk (opt-in).
+source_physical = 1
+source_touchpad = 0
+source_virtual = 0
+
+# Record recent-input history in the UI (memory only, never written to disk).
+history_enabled = 1
+
+# Hotkeys: modifiers + one key, e.g. ctrl+shift+f12, ctrl+alt+shift+end.
+toggle_hotkey = ctrl+shift+f12
+panic_hotkey = ctrl+alt+shift+end
+
+# Optional: while armed, a key of this PC acts as a mouse side button on the
+# target (held while the key is held), e.g. for a mouse without side buttons.
+# The key itself is not sent. Names as for hotkeys, plus grave (the key left of
+# 1), capslock, rctrl, ralt, apps, scrolllock, pause.
+# mouse4_key = grave
+# mouse5_key =
+
+# Always-on-top badge: click it to arm, drag it anywhere (it remembers where).
+# 1 = always shown, 0 = shown only while armed.
+badge = 1
+
+# Prevent the default HIDway Pico USB mouse from being captured again when
+# the Pico is plugged into this same PC. Change this if firmware VID/PID were
+# overridden at build time.
+loopback_device = VID_CAFE&PID_4877
+
+# End-to-end encryption (optional): the same 64 hex characters as the relay's
+# key file (created with `hidwayd --gen-key`, see docs/RELAY.md). Keep secret.
+# With a key every packet is sealed; a malformed key stops all sending.
+# key = <64-hex-characters>
