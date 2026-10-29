@@ -1,13 +1,20 @@
 # Security
 
-This-PC loopback is not raw-device isolation. In live Sunshine testing, original
+Gaming PC loopback is not raw-device isolation. In live Sunshine testing, original
 remote mouse reports remained visible through Raw Input while ordinary window
 messages received only the Pico clicks. A Raw Input application may observe
 both sources. Do not use this mode as a claim of hardware-only input origin.
 
 HIDway delivers keyboard and mouse actions to a target computer through USB. Access to an authorized sender or relay can therefore become control of that target. Treat the complete input path as privileged, even though the software normally runs without administrator rights.
 
-Updated 2026-10-28 for the input preview and observed hardware limitations. This document describes source controls and known limits; it is not a certification of every deployed machine or untested input source.
+Updated 2026-10-29 for the input preview and observed hardware limitations. This document describes source controls and known limits; it is not a certification of every deployed machine or untested input source.
+
+The confirmed AION2 same-PC session required a manually approved elevated HIDway
+launch to match the game's integrity level. Elevation gives the client broader
+local access; the installer and client do not elevate automatically or change
+UAC settings. Normal launches remain unelevated. A separately launched lower-
+integrity Monitor may be unable to send replay IPC to an elevated client; close
+that Monitor and launch the companion from the elevated client when needed.
 
 ## Trust boundaries
 
@@ -45,10 +52,20 @@ Managed Linux deployment separates build/runtime users and applies systemd privi
 The optional standalone input monitor observes local device metadata, counts
 and transient held state. Background counting is visible and enabled by
 default. Optional injection-flag hooks always pass events onward. The monitor
-has no network code, forwarding or input-injection path; it stores names/source
-labels locally and writes numeric summaries only when explicitly launched
-with reporting enabled. No typed text or key-name history is saved. Device
+has no network code or input-injection path. It stores names/source labels and
+optional numeric summaries locally. Explicit Record saves key/button identities,
+timestamps and movement in unencrypted local files; these can reveal typed text.
+Recording is visible, off by default, bounded and never part of release payloads.
+Replay is confirmed in the client, uses normal Pi/Pico output with live capture
+off, and releases on Stop/PANIC/completion or existing transport faults. Device
 names, bus classification and user labels are not authenticated identities.
+
+The Windows wizard installs per user, preserves live configuration, checks the
+payload hashes and refuses locked binaries. SHA-256 is a corruption check, not
+publisher authentication; preview binaries/scripts are unsigned. Pi installation
+uses visible OpenSSH host verification/login/sudo and trusts the configured public
+repository main branch. The wizard does not store credentials. Firmware selection
+checks BOOTSEL family and still requires the user to identify W/non-W hardware.
 
 1. **Driver-dependent capture:** the 2026-10-28 implementation fixes source overlap, removes keyboard echo/time guesses, rejects Unicode packets before scan mapping and adds generation/enqueue/age checks. Injection flags still do not identify applications, and virtual HID drivers can appear physical. Same-machine native/Pico overlap and remote-driver behavior require hardware acceptance.
 2. **Capture loss:** Windows can silently remove a slow low-level hook. Virtual-only mode lacks the exclusive mode's foreground checks; healthy network traffic can continue carrying stale held state. Transport watchdogs cannot detect that case. [Windows hook behaviour](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc).

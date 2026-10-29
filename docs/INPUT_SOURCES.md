@@ -1,6 +1,6 @@
 # Input sources and routing
 
-Updated 2026-10-28. The input changes are implemented and covered by host tests.
+Updated 2026-10-29. The input changes are implemented and covered by host tests.
 Actual AnyDesk drivers, target applications and USB hardware still require the
 acceptance checks in [INPUT_TESTING.md](INPUT_TESTING.md). See
 [VALIDATION.md](VALIDATION.md) for deployment and test evidence.
@@ -31,12 +31,36 @@ not identify applications or correlate every possible driver.
 
 Open **Input options** beside Save. Opening it disarms; close it before ARM.
 
+**Use Pico on this PC** is a one-click preset for the Gaming PC with Pico USB
+connected to it. It saves Gaming PC mode, virtual input enabled, native pointer,
+keyboard/mouse output enabled and hold-to-repeat off. Physical/touchpad source
+preferences are retained for returning to Remote PC mode. It never arms.
+The configured Pi relay address, port and key stay unchanged: virtual keys,
+buttons and wheels travel from this PC through Pi → UART → Pico → this PC's USB.
+Pointer position stays native. The Pi must allow this PC as a client.
+
+The preset requires both matching Pico keyboard and mouse Raw Input collections
+on this PC and a configured UDP peer outside the loopback range. The USB check
+uses `loopback_device` (default `VID_CAFE&PID_4877`); it does not authenticate the
+device, verify UART wiring or prove relay reachability. Normal ARM checks still
+apply. `127.0.0.1` / `localhost` points to this PC, not the Pi; the old localhost
+test receiver did not produce USB HID. This preset needs no firmware update.
+To return, select **Remote PC -> Gaming PC** and **Apply and save**.
+
+**Game compatibility:** the user confirmed working AION2 input after starting
+HIDway on the Gaming PC with matching elevated privileges and setting laptop
+Moonlight to relative mouse mode. The earlier configuration failed. See
+[the current validation result](VALIDATION.md) for the scope of that acceptance.
+Native-pointer mode does not convert movement into USB HID or isolate original
+Raw Input. Running input capture below the target's integrity level can prevent
+capture; no automatic elevation is performed.
+
 | Setting | Behavior |
 |---|---|
-| Send input to: Another PC | Exclusive badge capture, including virtual-only source selection |
-| Send input to: This PC through Pico | Capture virtual input only; native physical input remains local |
-| This-PC pointer: Native position | Default for This-PC: remote cursor placement stays native; keys, buttons and wheels use Pico |
-| This-PC pointer: Through Pico, relative | Experimental relative HID movement; pointer acceleration and DPI may change placement |
+| Send input to: Remote PC | Exclusive badge capture, including virtual-only source selection |
+| Send input to: Gaming PC through Pico | Capture virtual input only; native physical input remains local |
+| Gaming PC pointer: Native position | Default for Gaming PC: remote cursor placement stays native; keys, buttons and wheels use Pico |
+| Gaming PC pointer: Through Pico, relative | Experimental relative HID movement; pointer acceleration and DPI may change placement |
 | Hold to repeat | OFF by default; generate clicks while the selected button is held |
 | Button / Repeat source | Select button and physical, touchpad, virtual or combined sources |
 | Repeat clicks/sec | Requested 1–25 CPS, default 10 |
@@ -54,10 +78,10 @@ on the same button. Input history describes paced output intent, not proof
 of target USB delivery. The HUD shows repeat/limiting status; no Windows balloon
 notifications are used.
 
-This-PC native pointer mode forwards no motion to Pico, so the same movement
+Gaming PC native pointer mode forwards no motion to Pico, so the same movement
 cannot also be applied through USB. It preserves the remote application's
 cursor coordinates and avoids relative HID acceleration changing click targets.
-This is a mixed route by design, not an all-input-through-USB claim. Another-PC
+This is a mixed route by design, not an all-input-through-USB claim. Remote PC
 mode always translates motion through Pico; its capture policy is unchanged.
 
 Native pointer motion and Pico button delivery have different timing. A very
@@ -69,7 +93,7 @@ prove successful dragging or target placement.
 Live Sunshine loopback testing showed one legacy window click per Pico click,
 but Raw Input also exposed the original remote mouse events. Low-level hook
 suppression does not establish isolation for Raw-Input-consuming applications.
-Use Another-PC capture for those applications unless their own input filtering
+Use Remote PC capture for those applications unless their own input filtering
 can select Pico specifically. Universal same-host raw-event isolation would
 need a different interception/driver architecture; none is installed here.
 
@@ -106,7 +130,7 @@ actual remote-driver acceptance tests.
 
 ## Same-machine loopback
 
-In This-PC mode, Physical and Touchpad forwarding are disabled. Selected
+In Gaming PC mode, Physical and Touchpad forwarding are disabled. Selected
 injected events are consumed, and returning physical Pico HID is passed to
 Windows. Native physical input stays direct. The time-based keyboard echo
 heuristic has been removed.
@@ -133,10 +157,12 @@ relays ignore that extra environment field and retain the original peer policy.
 
 ## Configuration
 
-The launcher must set the working directory containing the user's INI.
+The client selects its executable directory before loading the adjacent INI,
+including launches from Explorer or the Monitor. Keep each installed pair and
+its configuration together.
 Configuration saves use an atomic replacement. Existing source-only settings
-migrate once: a legacy virtual-only selection becomes explicit This-PC mode;
-other combinations become Another-PC mode.
+migrate once: a legacy virtual-only selection becomes explicit Gaming PC mode;
+other combinations become Remote PC mode.
 
 Example defaults:
 

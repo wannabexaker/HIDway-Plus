@@ -69,17 +69,17 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Setup script parses
+      - name: Setup validation
         shell: powershell
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-              "$PWD\tools\setup\hidway-setup.ps1", [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) { $errors | ForEach-Object { "::error::$_" }; exit 1 }
+          powershell -NoProfile -STA -File tools/setup/hidway-setup-gui.ps1 -ValidateOnly
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Stage the input monitor beside the client
         shell: powershell
-        run: Copy-Item build/tools/input-monitor/Release/hidway-input-monitor.exe build/client/Release/
+        run: |
+          Copy-Item build/tools/input-monitor/Release/hidway-input-monitor.exe build/client/Release/
+          Copy-Item build/tools/setup/Release/HIDway-Setup.exe build/client/Release/
 
       - name: Hand over the binaries
         if: github.event_name != 'pull_request'
@@ -90,6 +90,7 @@ jobs:
             build/client/Release/hidway-client.exe
             build/client/Release/hidway-probe.exe
             build/client/Release/hidway-input-monitor.exe
+            build/client/Release/HIDway-Setup.exe
           if-no-files-found: error
           retention-days: 1
 

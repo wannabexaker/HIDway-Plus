@@ -1,12 +1,57 @@
 # Validation
 
+## Same-PC game acceptance (2026-10-29)
+
+**The user confirmed working in-game input after the configuration corrections.**
+HIDway runs on the Gaming PC with ARM enabled and matching elevated privileges;
+the laptop Moonlight client uses relative mouse mode. The initial configuration
+had unresponsive keyboard and erratic mouse movement through laptop AnyDesk and
+Moonlight. Monitor counts alone did not establish game compatibility.
+
+Separate transport observations showed five controlled Moonlight clicks producing
+five Pico DOWN/UP pairs, slow AnyDesk keys producing five pairs, and balanced
+phone-originated Pico clicks. Some manual cases contained additional actions and
+are not exact five-click acceptance results. One disarmed run was invalidated
+and replaced by an agent-controlled armed run.
+
+Read-only diagnosis found the main game process at High integrity while HIDway
+was at Medium integrity, and the laptop Moonlight absolute desktop-mouse option
+enabled. With explicit user approval and manual UAC acceptance, HIDway was
+restarted at High integrity and Moonlight was reconnected with relative mouse
+mode. The user subsequently confirmed working input in the actual game. This
+is acceptance of that setup, not a certification of every remote driver, mobile
+gesture or game. The HIDway preset also retains native motion and cannot
+guarantee isolation of the original Raw Input feed. No firmware change, game
+modification, persistent elevation or security-policy change was performed.
+
+Keys, mouse buttons and wheels are forwarded as Pico USB HID. Pointer movement
+remains native in the selected preset; this result does not mean every input
+passes through USB or that original Raw Input reports disappear. Elevated startup
+was explicitly approved for the current session; ordinary launches still start
+without elevation and without ARM.
+
+## Same-PC Pico preset (2026-10-29)
+
+The Windows Release build passes with warnings treated as errors; all nine CTest
+groups pass. Production-handler fixtures cover missing/partial local Pico USB
+collections, loopback/unavailable peers, failed saves, successful save, retained
+Pi target and physical/touchpad preferences, virtual-only capture and no automatic
+ARM. Normal Apply also retains the previous runtime config if saving fails.
+Read-only connected-socket checks cover IPv4 and IPv6 loopback plus an external
+documentation address; these checks send no input packets. IPv4-mapped IPv6 is
+checked when the host permits that connection.
+
+The preset selects the existing Gaming PC capture path; it does not alter firmware
+or solve the documented Raw Input isolation limitation. Automated fixtures do not
+establish a new end-to-end physical acceptance result.
+
 Validation snapshot: 2026-10-28. Automated checks, reference-hardware
 observations and remaining acceptance work are listed separately. These
 results do not certify every driver, remote-control application or target.
 
 ## Automated checks
 
-Windows Release builds use MSVC with warnings treated as errors. All six
+Windows Release builds use MSVC with warnings treated as errors. All nine
 CTest groups pass:
 
 | Group | Coverage |
@@ -16,10 +61,28 @@ CTest groups pass:
 | Firmware host | Production USB-output logic with mocked time/endpoints |
 | Windows client | Capture routing, stale generations, failures and UI options |
 | Windows platform | Configuration migration, atomic saves and sender clock |
-| Input monitor | 29 checks for counting, classification boundaries and persistent labels |
+| Input monitor | 257 checks for counters, labels, raw/injected identity, Unicode diagnostics, wheel/button distinction, writer/export and output collisions |
+| Recording | Versioned round-trip, truncation, count, bounds, ordering, numeric overflow and trailing-data rejection |
+| Setup bootstrap | Native launcher opens a visible, inactive WPF wizard and closes without installing |
+| Windows setup | 45 isolated clean-install/update/configuration/shortcut/registration/uninstall checks |
+
+The recording/setup preview also passes 45 isolated Windows installer checks,
+including preserving settings/labels, locked-file refusal, payload tamper/path
+rejection, SSH argument validation and Pico-family checks. All six WPF wizard
+pages load/render without installation. The setup launcher passes single-config
+and Release-subfolder multi-config builds. Replay production-handler tests cover
+per-device overlap, wheel accumulation, absolute baselines, live-input exclusion,
+load-only IPC and PANIC release. The portable recording tests pass under Linux
+with warnings treated as errors. Windows source/theme previews were inspected.
+
+These new tests do not claim a fresh real Pico replay run, a complete interactive
+Pi installation, a firmware flash, or a long recording soak. Existing hardware
+and live connections were preserved during development. Follow
+[the one-operator matrix](INPUT_TESTING.md#recordingreplay-acceptance-one-operator).
 
 Linux validation includes common/input/serial-queue checks, 18 relay fail-safe
-checks and 41 installer checks. Firmware builds target Pico, Pico W, Pico 2
+checks and 50 installer checks, including additive Remote PC/Gaming PC permission
+preservation, idempotence and capacity refusal. Firmware builds target Pico, Pico W, Pico 2
 and Pico 2 W. Host firmware tests do not replace endpoint tests on a real board.
 
 The Windows package is checked for the client, probe, monitor, launchers,
@@ -35,7 +98,7 @@ from retained pre-change source, not read back from device flash.
 
 | Scenario | Observation and boundary |
 |---|---|
-| Another-PC physical keyboard/mouse and touchpad | Recorded press/release pairs, pointer movement and two-finger scrolling; all selected sources enabled |
+| Remote PC physical keyboard/mouse and touchpad | Recorded press/release pairs, pointer movement and two-finger scrolling; all selected sources enabled |
 | Same-PC virtual clicks | Ten clicks produced ten Pico press/release pairs and ten ordinary window click pairs |
 | Same-PC Raw Input | Original remote reports remained visible alongside Pico; universal source isolation did not pass |
 | External AutoClicker | Baseline 100 pairs; sustained runs settled at 1021 and 900 pairs with ARM retained and no post-stop click debt |

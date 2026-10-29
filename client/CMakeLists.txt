@@ -16,9 +16,12 @@ add_custom_target(hidway_version
 
 add_executable(hidway-client WIN32
     src/main.c
+    src/local_pico.c
     src/config.c
     src/net.c
     src/send_clock.c
+    src/replay.c
+    ${HIDWAY_COMMON}/hidway_recording.c
     ${HIDWAY_COMMON}/hidway_input_source.c
     ${HIDWAY_COMMON}/hidway_input_state.c
     ${HIDWAY_COMMON}/keymap_sc2hid.c
@@ -36,8 +39,11 @@ add_executable(hidway-probe
 
 add_executable(hidway-client-tests
     ../tests/test_client_win.c
+    src/local_pico.c
     src/config.c src/net.c
     src/send_clock.c
+    src/replay.c
+    ${HIDWAY_COMMON}/hidway_recording.c
     ${HIDWAY_COMMON}/hidway_input_source.c
     ${HIDWAY_COMMON}/hidway_input_state.c
     ${HIDWAY_COMMON}/keymap_sc2hid.c
@@ -65,6 +71,6 @@ foreach (t hidway-client hidway-probe hidway-client-tests)
 endforeach ()
 
 target_link_libraries(hidway-client PRIVATE
-    user32 gdi32 winmm dwmapi shell32 uxtheme gdiplus)
+    user32 gdi32 winmm dwmapi shell32 uxtheme gdiplus comdlg32)
 target_link_libraries(hidway-probe PRIVATE winmm)
-target_link_libraries(hidway-client-tests PRIVATE user32 gdi32 winmm dwmapi shell32 uxtheme gdiplus)
+target_link_libraries(hidway-client-tests PRIVATE user32 gdi32 winmm dwmapi shell32 uxtheme gdiplus comdlg32)

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     HIDway setup for Windows: choose what to install on this PC.
 
@@ -27,7 +27,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'player', 'gaming')][string]$Role = '',
+    [ValidateSet('', 'player', 'remote', 'gaming')][string]$Role = '',
     [ValidateSet('HIDway', 'Tailscale', 'Moonlight', 'Sunshine')][string[]]$Install = @(),
     [switch]$Update,
     [switch]$Yes,     # no questions: take the defaults
@@ -38,9 +38,10 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
+if ($Role -eq 'remote') { $Role = 'player' } # legacy CLI name remains compatible
 
 $Components = @(
-    [pscustomobject]@{ Key = 'HIDway'; Name = 'HIDway client'; Roles = @('player'); Kind = 'hidway'
+    [pscustomobject]@{ Key = 'HIDway'; Name = 'HIDway + Input Monitor'; Roles = @('player','gaming'); Kind = 'hidway'
         What = 'reads your keyboard and mouse and sends them to the Raspberry Pi'
         Page = 'https://github.com/wannabexaker/HIDway-/releases/latest'; Match = $null; Id = $null; License = 'MIT' }
     [pscustomobject]@{ Key = 'Tailscale'; Name = 'Tailscale'; Roles = @('player', 'gaming'); Kind = 'winget'
@@ -142,28 +143,8 @@ function Install-HIDway {
     Say "  into $InstallDir" DarkGray
     if ($WhatIf) { return }
 
-    $running = Get-Process hidway-client -ErrorAction SilentlyContinue
-    if ($running) {
-        if (-not (Ask '  HIDway is running. Close it to update it?' $true)) { throw 'HIDway is running' }
-        $running | ForEach-Object { $_.CloseMainWindow() | Out-Null }
-        Start-Sleep 2
-        Get-Process hidway-client -ErrorAction SilentlyContinue | Stop-Process -Force
-    }
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    foreach ($f in 'hidway-client.exe', 'hidway-probe.exe', 'hidway-input-monitor.exe', 'Start-Input-Monitor.cmd', 'INPUT_MONITOR.md', 'hidway.ini.example', 'VERSION', 'LICENSE', 'README.md', 'SECURITY.md') {
-        $p = Join-Path $src $f
-        if (Test-Path $p) { Copy-Item $p $InstallDir -Force }
-    }
-    if (Test-Path (Join-Path $src 'firmware')) {
-        Copy-Item (Join-Path $src 'firmware') $InstallDir -Recurse -Force
-    }
-    if (Test-Path (Join-Path $src 'docs')) {
-        Copy-Item (Join-Path $src 'docs') $InstallDir -Recurse -Force
-    }
-    $ini = Join-Path $InstallDir 'hidway.ini'
-    if (-not (Test-Path $ini)) { # your settings are never overwritten
-        Copy-Item (Join-Path $InstallDir 'hidway.ini.example') $ini
-    }
+    . (Join-Path $src 'hidway-setup-core.ps1')
+    $null = Install-HidwayPackage $src $InstallDir -NoIntegration
 
     $exe = Join-Path $InstallDir 'hidway-client.exe'
     if ($NoShortcuts) { return }
@@ -251,8 +232,8 @@ if ($WhatIf) { Say 'WhatIf: nothing will be changed.' Yellow }
 if (-not $Role -and -not $Update -and $Install.Count -eq 0) {
     Write-Host ''
     Say 'Which PC is this?'
-    Say '  1  The PC you play FROM (your keyboard and mouse are here)'
-    Say '  2  The gaming PC (the game runs here)'
+    Say '  1  Remote PC (the sending laptop / keyboard and mouse)'
+    Say '  2  Gaming PC (the Pico USB and game are here)'
     $Role = if ($Yes) { 'player' } elseif ((Read-Host 'Choose 1 or 2') -eq '2') { 'gaming' } else { 'player' }
 }
 
@@ -268,7 +249,7 @@ $rows = foreach ($c in $Components) {
 
 while ($true) {
     Write-Host ''
-    $label = switch ($Role) { 'gaming' { 'the gaming PC' } 'player' { 'the PC you play from' } default { 'this PC' } }
+    $label = switch ($Role) { 'gaming' { 'Gaming PC' } 'player' { 'Remote PC' } default { 'this PC' } }
     Say "What to $(if ($Update) { 'update' } else { 'install' }) on ${label}:" White
     for ($i = 0; $i -lt $rows.Count; $i++) {
         $r = $rows[$i]

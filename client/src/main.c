@@ -9,6 +9,7 @@
 #include <shellscalingapi.h>
 #include <uxtheme.h>
 #include <wtsapi32.h>
+#include <commdlg.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -26,9 +27,19 @@
 #include "hidway_version.h"
 #include "keymap_sc2hid.h"
 #include "net.h"
+#include "local_pico.h"
 #include "protocol.h"
 #include "capture_queue.h"
 #include "send_clock.h"
+#include "replay.h"
+static struct {
+    int active;hw_recording file;hidway_replay_state state;unsigned next;
+    uint32_t started,last_tick;wchar_t path[2048];
+} replay;
+static void replay_tick(void);
+static void replay_choose(void);
+static void open_monitor(void);
+#define RECORDING_IPC 0x48575231u
 
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -106,7 +117,7 @@ enum {
     ID_CB_KBD, ID_CB_MOUSE, ID_CB_HIST, ID_SAVE, ID_ARM, ID_PANIC,
     ID_SRC_PHYSICAL, ID_SRC_TOUCHPAD, ID_SRC_VIRTUAL,
     ID_OPTIONS, ID_ROUTE, ID_REPEAT, ID_REPEAT_BUTTON, ID_REPEAT_CPS, ID_REPEAT_SOURCE, ID_CLICK_CPS, ID_POINTER,
-    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT
+    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO
 };
 
 enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
@@ -225,7 +236,8 @@ static struct {
     HINSTANCE inst;
     HWND hwnd;
     HWND history, clear, edit[4], cb[3], src[3], save, arm, panic;
-    HWND options,options_button,route,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps;
+    HWND options,options_button,route,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps,options_hint;
+    HWND monitor_button,replay_button;
     int options_repeat;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
           f_btn, f_btn_big, f_chip;
@@ -682,7 +694,7 @@ static void invalidate_readouts(void);
 static void net_tick(void)
 {
     if(!g.armed)return;
-    drain_capture();
+    if(replay.active)replay_tick();else drain_capture();
     if(!g.armed)return;
     if(InterlockedCompareExchange(&capture_fault,0,0)||
        InterlockedCompareExchange(&g.send_clock.failed,0,0)) {
@@ -745,7 +757,7 @@ static void send_wake(void)
         return;
     net_send_state(HIDWAY_MSG_WAKE);
     g.wake_sent_ms = timeGetTime();
-    history_add('i', "Wake sent to the target PC");
+    history_add('i', "Wake sent to the Gaming PC");
     invalidate_readouts();
 }
 
@@ -865,7 +877,7 @@ static void monitor(void)
     if (ts >= 0 && ts != g.shown_target) {
         static const char *names[] = {"no report from the Pico", "off", "asleep", "on"};
         char line[64];
-        snprintf(line, sizeof line, "Target PC: %s", names[ts & 3]);
+        snprintf(line, sizeof line, "Gaming PC: %s", names[ts & 3]);
         if (g.shown_target != 0 || ts != HIDWAY_TARGET_UNKNOWN)
             history_add('i', line);
         g.shown_target = ts;
@@ -934,6 +946,7 @@ static unsigned pulse_speed(unsigned origin,unsigned button)
 }
 static hidway_event_frame_t input_frame(void)
 {
+    if(replay.active)return replay.state.frame;
     hidway_event_frame_t f={0};f.keyboard.mods=g.modifiers;memcpy(f.keyboard.keys,g.keys,sizeof g.keys);
     f.buttons=native_buttons()|paced_buttons(timeGetTime());
     f.x=g.cum_x;f.y=g.cum_y;f.wheel=g.cum_wheel;f.pan=g.cum_pan;return f;
@@ -1471,7 +1484,7 @@ static void set_armed(int on)
         if(session==g.session_id)session^=0x80000000u;
         g.session_id=session;g.seq=0;memset(&g.status_order,0,sizeof g.status_order);
     }
-    if (on && !g.preview && !capture_start()) {
+    if (on && !g.preview && !replay.active && !capture_start()) {
         history_add('w', "Could not start input capture - not armed");
         badge_refresh();
         return;
@@ -1481,6 +1494,7 @@ static void set_armed(int on)
         for(unsigned o=0;o<3;o++)for(unsigned i=0;i<5;i++)g.last_limited+=g.pulse[o][i].limited;
     }
     g.armed = on;
+    if(!on&&replay.active){replay.active=0;hw_rec_free(&replay.file);memset(&replay.state,0,sizeof replay.state);if(g.replay_button)SetWindowTextA(g.replay_button,"Replay...");}
     g.prev_link_up = 0;
     clear_relay_state();
     g.end_as_del = 0;
@@ -1526,7 +1540,7 @@ static unsigned held_mods(void)
 /* A key consumed by the capture hook (keyboard relay on). */
 static void on_capture_key(UINT vk, LPARAM info)
 {
-    if (!g.armed)
+    if (!g.armed||replay.active)
         return; /* queued before a disarm: the target is already released */
     bool up = (info & KEYF_UP) != 0;
     bool e0 = (info & KEYF_E0) != 0;
@@ -1658,7 +1672,7 @@ static int raw_device_is_loopback(HANDLE device)
 
 static void on_raw_mouse(HANDLE device, const RAWMOUSE *m, unsigned source)
 {
-    if (!g.armed || !g.cfg.relay_mouse || !(input_source_mask() & source))
+    if (!g.armed || replay.active || !g.cfg.relay_mouse || !(input_source_mask() & source))
         return;
     if (source == HIDWAY_SOURCE_TOUCHPAD && (m->usFlags & MOUSE_MOVE_ABSOLUTE)) {
         int slot = absolute_slot(device);
@@ -1690,7 +1704,7 @@ static void on_raw_mouse(HANDLE device, const RAWMOUSE *m, unsigned source)
 
 static void on_capture_mouse(UINT msg, LPARAM data)
 {
-    if (!g.armed || !g.cfg.relay_mouse || !g.cfg.source_virtual)
+    if (!g.armed || replay.active || !g.cfg.relay_mouse || !g.cfg.source_virtual)
         return;
     switch (msg) {
     case WM_MOUSEMOVE:
@@ -1960,6 +1974,8 @@ static void apply_layout(void)
     place(g.clear, L->clear);
     place(g.save, L->save);
     place(g.options_button,R(300,442,414,466));
+    place(g.monitor_button,R(132,442,212,466));
+    place(g.replay_button,R(220,442,292,466));
     place(g.arm, L->arm);
     place(g.panic, L->panic);
     for (int i = 0; i < 3; i++)
@@ -2161,7 +2177,7 @@ static void paint_stats(HDC dc)
     else if (ts == HIDWAY_TARGET_OFF) strcpy(v[3], "Off");
     else strcpy(v[3], "Off?"); /* no report: Pico without power (PC off) or unplugged */
 
-    static const char *names[4] = {"RTT", "LOSS", "RATE", "PC"};
+    static const char *names[4] = {"RTT", "LOSS", "RATE", "GAMING PC"};
     for (int i = 0; i < 4; i++) {
         RECT t = L->tiles[i];
         int hot = i == 3 && g.wake_hot && wake_offered();
@@ -2173,7 +2189,7 @@ static void paint_stats(HDC dc)
     if (wake_offered() && !waking()) {
         RECT t = L->tiles[3];
         int cw = text_w(dc, g.f_chip, "WAKE") + 2 * S(8);
-        chip(dc, t.right - S(8) - cw, t.top + S(15), S(18), "WAKE", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
+        chip(dc, t.right - S(8) - cw, t.top + S(26), S(18), "WAKE", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
     }
 }
 
@@ -2597,7 +2613,7 @@ static void refresh_source_controls(void)
 {
     if(g.src[0])EnableWindow(g.src[0],!g.cfg.loopback_mode);
     if(g.src[1])EnableWindow(g.src[1],!g.cfg.loopback_mode);
-    if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Input: this PC":"Input options");
+    if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Gaming PC":"Remote PC");
     for(int i=0;i<3;i++)if(g.src[i])InvalidateRect(g.src[i],NULL,FALSE);
 }
 static const int repeat_source_masks[7]={1,2,4,3,5,6,7};
@@ -2631,6 +2647,21 @@ static void option_route_refresh(void)
     EnableWindow(g.repeat_source,!loopback);
     EnableWindow(g.pointer_route,loopback);
 }
+static void options_error(HWND h,const char *message)
+{
+    SetWindowTextA(h,"Input options - settings not saved");
+    SetWindowTextA(g.options_hint,message);
+}
+static void options_commit(HWND h,const hidway_config_t *next)
+{
+    if(g.armed)set_armed(0);
+    if(!g.preview&&!hidway_config_save("hidway.ini",next)) {
+        options_error(h,"Could not save hidway.ini. Settings have not changed.");return;
+    }
+    g.cfg=*next;
+    refresh_source_controls();
+    history_add('i',"Input options saved - arm when ready");DestroyWindow(h);
+}
 static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
 {
     switch(msg) {
@@ -2638,9 +2669,9 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
         const DWORD combo=CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL;
         option_control(h,"STATIC","Send input to",0,0,20,20,130,20);
         g.route=option_control(h,"COMBOBOX","",combo,ID_ROUTE,160,16,280,140);
-        const char *routes[]={"Another PC","This PC through Pico (virtual only)"};
+        const char *routes[]={"Remote PC -> Gaming PC","Gaming PC (Pico connected here)"};
         option_items(g.route,routes,2,g.cfg.loopback_mode);
-        option_control(h,"STATIC","This-PC pointer",0,0,20,64,136,20);
+        option_control(h,"STATIC","Gaming PC pointer",0,0,20,64,136,20);
         g.pointer_route=option_control(h,"COMBOBOX","",combo,ID_POINTER,160,60,280,140);
         const char *pointers[]={"Native position (recommended)","Through Pico: relative (experimental)"};
         option_items(g.pointer_route,pointers,2,g.cfg.loopback_pointer_pico);
@@ -2665,10 +2696,11 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
         option_control(h,"STATIC","Virtual clicks/sec",0,0,20,286,136,20);
         g.click_cps=option_control(h,"EDIT",text,ES_NUMBER|WS_BORDER|WS_TABSTOP,ID_CLICK_CPS,160,282,78,28);
         option_control(h,"STATIC","1-25 per button",0,0,254,286,180,20);
-        option_control(h,"STATIC","Repeat replaces dragging for that button and source.\r\n"
-            "Virtual repeat also respects the virtual click limit.\r\n"
-            "This-PC mode forwards virtual input only; local input stays local.\r\n"
-            "Native pointer keeps remote positioning; clicks/keys use Pico.",0,0,20,330,420,88);
+        HWND local=option_control(h,"BUTTON","Use Pico on this PC",BS_OWNERDRAW|WS_TABSTOP,ID_LOCAL_PICO,20,330,420,34);
+        subclass(local,btn_proc);
+        g.options_hint=option_control(h,"STATIC","Preset: Pico USB connected here; relay stays on the Pi.\r\n"
+            "Virtual input; native pointer; repeat off. Saves without ARM.\r\n"
+            "Hold to repeat replaces dragging for its button/source.",0,0,20,370,420,48);
         uint32_t limited=g.last_limited;
         char info[96];snprintf(info,sizeof info,"Last ARM: %lu extra click attempts limited",(unsigned long)limited);
         option_control(h,"STATIC",info,0,0,20,426,420,24);
@@ -2681,6 +2713,21 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
     case WM_CTLCOLOREDIT:case WM_CTLCOLORLISTBOX:
         SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT);return (LRESULT)g.b_field;
     case WM_COMMAND:
+        if(LOWORD(w)==ID_LOCAL_PICO&&HIWORD(w)==BN_CLICKED) {
+            if(!g.net_ok||hidway_net_peer_is_loopback()!=0) {
+                options_error(h,"Save the Pi relay address in the main window first.\r\n"
+                    "127.0.0.1 / localhost cannot forward USB HID through the Pi.");return 0;
+            }
+            if(hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
+                options_error(h,"Pico keyboard and mouse USB devices were not both found here.\r\n"
+                    "Use this preset on the Gaming PC with Pico USB connected.");return 0;
+            }
+            hidway_config_t next=g.cfg;
+            next.loopback_mode=1;next.loopback_pointer_pico=0;
+            next.source_virtual=1;next.relay_keyboard=next.relay_mouse=1;
+            next.repeat_enabled=0;next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
+            options_commit(h,&next);return 0;
+        }
         if(LOWORD(w)==ID_ROUTE&&HIWORD(w)==CBN_SELCHANGE){option_route_refresh();return 0;}
         if(LOWORD(w)==ID_REPEAT&&HIWORD(w)==BN_CLICKED) {
             g.options_repeat=!g.options_repeat;InvalidateRect(g.repeat,NULL,FALSE);return 0;
@@ -2690,21 +2737,17 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
             if(cps<1||cps>25||limit<1||limit>25) {
                 SetWindowTextA(h,"Input options - speed must be 1 to 25");return 0;
             }
-            if(g.armed)set_armed(0);
-            g.cfg.loopback_mode=(int)SendMessageA(g.route,CB_GETCURSEL,0,0)==1;
-            g.cfg.loopback_pointer_pico=SendMessageA(g.pointer_route,CB_GETCURSEL,0,0)==1;
-            g.cfg.repeat_enabled=g.options_repeat;
-            g.cfg.repeat_button=(int)SendMessageA(g.repeat_button,CB_GETCURSEL,0,0);
+            hidway_config_t next=g.cfg;
+            next.loopback_mode=(int)SendMessageA(g.route,CB_GETCURSEL,0,0)==1;
+            next.loopback_pointer_pico=SendMessageA(g.pointer_route,CB_GETCURSEL,0,0)==1;
+            next.repeat_enabled=g.options_repeat;
+            next.repeat_button=(int)SendMessageA(g.repeat_button,CB_GETCURSEL,0,0);
             int selection=(int)SendMessageA(g.repeat_source,CB_GETCURSEL,0,0);
-            g.cfg.repeat_sources=repeat_source_masks[selection<0||selection>6?0:selection];
-            if(g.cfg.loopback_mode)g.cfg.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
-            g.cfg.repeat_cps=cps;g.cfg.virtual_click_cps=limit;
-            if(g.cfg.loopback_mode)g.cfg.source_virtual=1;
-            if(!g.preview&&!hidway_config_save("hidway.ini",&g.cfg)) {
-                SetWindowTextA(h,"Input options - could not save settings");return 0;
-            }
-            refresh_source_controls();
-            history_add('i',"Input options saved - arm when ready");DestroyWindow(h);return 0;
+            next.repeat_sources=repeat_source_masks[selection<0||selection>6?0:selection];
+            if(next.loopback_mode)next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
+            next.repeat_cps=cps;next.virtual_click_cps=limit;
+            if(next.loopback_mode)next.source_virtual=1;
+            options_commit(h,&next);return 0;
         }
         break;
     case WM_CLOSE:DestroyWindow(h);return 0;
@@ -2741,6 +2784,8 @@ static void create_controls(HWND h)
     g.clear = mk(h, "BUTTON", "Clear", BS_OWNERDRAW | WS_TABSTOP, ID_CLEAR);
     g.save = mk(h, "BUTTON", "Save", BS_OWNERDRAW | WS_TABSTOP, ID_SAVE);
     g.options_button=mk(h,"BUTTON","Input options",BS_OWNERDRAW|WS_TABSTOP,ID_OPTIONS);
+    g.monitor_button=mk(h,"BUTTON","Monitor",BS_OWNERDRAW|WS_TABSTOP,ID_MONITOR);
+    g.replay_button=mk(h,"BUTTON","Replay...",BS_OWNERDRAW|WS_TABSTOP,ID_REPLAY);
     g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
     g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
     g.cb[0] = mk(h, "BUTTON", "Keyboard", BS_OWNERDRAW | WS_TABSTOP, ID_CB_KBD);
@@ -2760,7 +2805,7 @@ static void create_controls(HWND h)
     g.edit[3] = mk(h, "EDIT", tmp, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_AUTO);
 
     HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2],
-                   g.src[0], g.src[1], g.src[2],g.options_button};
+                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button};
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
         subclass(btns[i], btn_proc);
 
@@ -2897,9 +2942,78 @@ static void save_screenshot(HWND hwnd)
     ReleaseDC(NULL, sdc);
 }
 
+static int window_executable_matches(HWND window,const wchar_t *expected)
+{
+    DWORD pid=0;GetWindowThreadProcessId(window,&pid);HANDLE process=pid?OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid):NULL;
+    if(!process)return 0;wchar_t path[2048];DWORD length=2048;
+    int ok=QueryFullProcessImageNameW(process,0,path,&length)&&!_wcsicmp(path,expected);CloseHandle(process);return ok;
+}
+static void open_monitor(void)
+{
+    wchar_t exe[2048];DWORD n=GetModuleFileNameW(NULL,exe,2048);if(!n||n>=2048)return;
+    wchar_t *slash=wcsrchr(exe,L'\\');if(!slash)return;wcscpy(slash+1,L"hidway-input-monitor.exe");
+    HWND existing=FindWindowW(L"HIDwayInputMonitor",NULL);
+    if(existing&&!window_executable_matches(existing,exe)){MessageBoxW(g.hwnd,L"Input Monitor is running from another folder. Close that copy, then click Monitor again to open the companion installed with this HIDway.",L"Close the previous Monitor",MB_OK|MB_ICONINFORMATION);return;}
+    if((INT_PTR)ShellExecuteW(g.hwnd,L"open",exe,NULL,NULL,SW_SHOWNORMAL)<=32)
+        MessageBoxW(g.hwnd,L"Install HIDway and Input Monitor from the same package. The monitor executable must be beside HIDway.",L"Monitor unavailable",MB_OK|MB_ICONINFORMATION);
+}
+static void replay_choose(void)
+{
+    if(replay.active){set_armed(0);history_add('i',"Replay stopped - all released");return;}
+    if(g.armed||g.preview||g.options){history_add('i',"DISARM and close input options before loading a replay");return;}
+    wchar_t path[2048];wcscpy(path,replay.path);
+    if(!path[0]) {
+        OPENFILENAMEW dialog={0};dialog.lStructSize=sizeof dialog;dialog.hwndOwner=g.hwnd;dialog.lpstrFilter=L"HIDway recording (*.hidrec)\0*.hidrec\0\0";
+        dialog.lpstrFile=path;dialog.nMaxFile=2048;dialog.Flags=OFN_FILEMUSTEXIST|OFN_NOCHANGEDIR;
+        if(!GetOpenFileNameW(&dialog))return;
+    }
+    replay.path[0]=0;hw_rec_free(&replay.file);
+    FILE *f=_wfopen(path,L"rb");char error[160];
+    if(!f){MessageBoxW(g.hwnd,L"Cannot open recording.",L"Replay",MB_OK|MB_ICONERROR);return;}
+    int ok=hw_rec_load(f,&replay.file,error,sizeof error);fclose(f);
+    if(!ok){MessageBoxA(g.hwnd,error,"Replay rejected",MB_OK|MB_ICONERROR);return;}
+    for(unsigned i=0;i<replay.file.count;i++) {
+        const hw_rec_event *e=&replay.file.events[i];uint16_t binding;
+        if(!hidway_replay_binding(e,&binding)||(!g.cfg.relay_keyboard&&e->type<=HW_REC_KEY_UP)||(!g.cfg.relay_mouse&&e->type>HW_REC_KEY_UP&&e->type!=HW_REC_RELEASE_DEVICE)) {
+            hw_rec_free(&replay.file);MessageBoxW(g.hwnd,L"This recording contains an unsupported key or an input type disabled in HIDway. Enable Keyboard/Mouse as appropriate. Unicode text/IME packets cannot be replayed as HID keys.",L"Replay rejected",MB_OK|MB_ICONINFORMATION);return;
+        }
+    }
+    wchar_t target[128],message[1024];to_wide(g.cfg.target,target,128);
+    swprintf(message,1024,L"Replay %u events over %.2f seconds to %ls:%d?\n\nLive capture is disabled during playback. Choose a blank test window on the target. Playback begins after 3 seconds.\n\nStop: Replay button, ARM toggle or PANIC hotkey. Playback runs once and releases everything when finished.",replay.file.count,replay.file.duration/1000.0,target,g.cfg.port);
+    if(MessageBoxW(g.hwnd,message,L"Start HIDway replay",MB_OKCANCEL|MB_ICONINFORMATION)!=IDOK){hw_rec_free(&replay.file);return;}
+    memset(&replay.state,0,sizeof replay.state);replay.next=0;replay.active=1;
+    replay.started=timeGetTime()+3000u;replay.last_tick=timeGetTime();g.generation++;g.exclusive_capture=0;
+    InterlockedExchange(&capture_fault,0);capture_queue_clear();
+    set_armed(1);
+    if(!g.armed){replay.active=0;hw_rec_free(&replay.file);return;}
+    SetWindowTextA(g.replay_button,"Stop");history_add('i',"REPLAY: starts in 3 seconds; live capture disabled");
+}
+static void replay_tick(void)
+{
+    uint32_t now=timeGetTime();if((int32_t)(now-replay.started)<0){replay.last_tick=now;return;}
+    /* Preserve ordered edges without a late catch-up burst. The output journal
+     * supplies minimum HID dwell; pause the recording clock under pressure. */
+    if(hidway_event_backlog_ms(&g.events)>24u){replay.started+=now-replay.last_tick;replay.last_tick=now;return;}
+    replay.last_tick=now;uint32_t elapsed=now-replay.started;
+    for(unsigned batch=0;batch<4&&replay.next<replay.file.count;batch++) {
+        hw_rec_event *e=&replay.file.events[replay.next];if(e->ms>elapsed)break;
+        if(!hidway_replay_apply(&replay.state,&replay.file.screen,e)){set_armed(0);history_add('w',"Replay mapping failed - released");return;}
+        replay.next++;
+        if(!publish_input())return;
+    }
+    g.cum_x=replay.state.frame.x;g.cum_y=replay.state.frame.y;g.cum_wheel=replay.state.frame.wheel;g.cum_pan=replay.state.frame.pan;
+    if(replay.next==replay.file.count&&elapsed>=replay.file.duration&&!g.events.count){set_armed(0);history_add('i',"Replay complete - all released");}
+}
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_COPYDATA: {
+        const COPYDATASTRUCT *data=(const COPYDATASTRUCT *)lp;
+        if(!data||data->dwData!=RECORDING_IPC||!data->lpData||data->cbData<sizeof(wchar_t)||data->cbData>sizeof replay.path||data->cbData%sizeof(wchar_t))return FALSE;
+        const wchar_t *path=data->lpData;unsigned length=data->cbData/sizeof(wchar_t);
+        if(path[length-1]||wcsnlen(path,length)!=length-1||g.armed)return FALSE;
+        memcpy(replay.path,path,data->cbData);history_add('i',"Recording ready: click Replay to review and start");return TRUE;
+    }
     case WM_CREATE:
         g.hwnd = hwnd;
         g.dpi = GetDpiForWindow(hwnd);
@@ -3029,7 +3143,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             HMENU m = CreatePopupMenu();
             AppendMenuA(m, MF_STRING, IDM_ARM, g.armed ? "Disarm" : "Arm");
             AppendMenuA(m, MF_STRING, IDM_PANIC, "Panic - release all");
-            AppendMenuA(m, MF_STRING | (wake_offered() ? 0 : MF_GRAYED), IDM_WAKE, "Wake target PC");
+            AppendMenuA(m, MF_STRING | (wake_offered() ? 0 : MF_GRAYED), IDM_WAKE, "Wake Gaming PC");
             AppendMenuA(m, MF_SEPARATOR, 0, NULL);
             AppendMenuA(m, MF_STRING, IDM_SHOW, IsWindowVisible(hwnd) ? "Hide window" : "Show window");
             AppendMenuA(m, MF_STRING | (g.cfg.badge ? MF_CHECKED : 0), IDM_BADGE, "Show badge (click to arm)");
@@ -3112,6 +3226,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                             LOWORD(wp) == ID_SRC_VIRTUAL))
                 set_armed(0); /* a capture-policy change always starts from a released state */
             switch (LOWORD(wp)) {
+            case ID_MONITOR:open_monitor();break;
+            case ID_REPLAY:replay_choose();break;
             case ID_OPTIONS:show_input_options();break;
             case ID_ARM: set_armed(!g.armed); break;
             case ID_PANIC: set_armed(0); history_add('w', "PANIC - all released"); break;
@@ -3243,14 +3359,30 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     (void)prev;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     g.inst = inst;
+    /* Configuration always belongs to the executable, including Explorer and
+     * monitor-initiated launches without a shortcut working directory. */
+    wchar_t executable_folder[2048];DWORD executable_length=GetModuleFileNameW(NULL,executable_folder,2048);
+    if(!executable_length||executable_length>=2048)return 1;
+    wchar_t *executable_slash=wcsrchr(executable_folder,L'\\');if(!executable_slash)return 1;*executable_slash=0;
+    if(!SetCurrentDirectoryW(executable_folder))return 1;
     parse_args(cmd ? cmd : "");
+    int argc=0;LPWSTR *argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+    if(argv){for(int i=1;i+1<argc;i++)if(!wcscmp(argv[i],L"--load-recording")&&wcslen(argv[i+1])<2048)wcscpy(replay.path,argv[i+1]);LocalFree(argv);}
     HANDLE instance_guard=NULL;
     if(!g.preview) {
         instance_guard=CreateMutexW(NULL,TRUE,L"Local\\HIDwayClientInputOwner");
         if(!instance_guard)return 1;
         if(GetLastError()==ERROR_ALREADY_EXISTS) {
             HWND existing=FindWindowA("HIDwayClient",NULL);
-            if(existing)ShowWindowAsync(existing,SW_RESTORE);
+            if(existing){
+                wchar_t current_exe[2048];GetModuleFileNameW(NULL,current_exe,2048);
+                if(!window_executable_matches(existing,current_exe)){MessageBoxW(NULL,L"HIDway is already running from another folder. Close that copy before opening this version. The active input session was left untouched.",L"Close the previous HIDway",MB_OK|MB_ICONINFORMATION);CloseHandle(instance_guard);return 1;}
+                ShowWindowAsync(existing,SW_RESTORE);
+                if(replay.path[0]){COPYDATASTRUCT data={RECORDING_IPC,(DWORD)((wcslen(replay.path)+1)*sizeof(wchar_t)),replay.path};DWORD_PTR result=0;
+                    if(!SendMessageTimeoutW(existing,WM_COPYDATA,0,(LPARAM)&data,SMTO_ABORTIFHUNG,2000,&result)||!result)
+                        MessageBoxW(NULL,L"DISARM HIDway before loading a recording, then try again.",L"Replay not loaded",MB_OK|MB_ICONINFORMATION);
+                }
+            }
             CloseHandle(instance_guard);return 0;
         }
     }
@@ -3288,7 +3420,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = g.b_bg;
     wc.hIcon = appicon;
-    wc.lpszClassName = "HIDwayClient";
+    wc.lpszClassName = g.preview?"HIDwayClientPreview":"HIDwayClient";
     if (!RegisterClassA(&wc))
         return 1;
     WNDCLASSA bc = {0};
@@ -3309,7 +3441,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         wx = g.cfg.window_x;
         wy = g.cfg.window_y;
     }
-    HWND hwnd = CreateWindowExA(0, "HIDwayClient", "HIDway", WIN_STYLE, wx, wy,
+    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "HIDway", WIN_STYLE, wx, wy,
                                 wr.right - wr.left, wr.bottom - wr.top, NULL, NULL, inst, NULL);
     if (!hwnd)
         return 1;
@@ -3321,6 +3453,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     ShowWindow(hwnd, g.shot_path[0] ? SW_SHOWNOACTIVATE : show);
     UpdateWindow(hwnd);
+    if(replay.path[0])history_add('i',"Recording ready: click Replay to review and start");
 
     MSG m;
     while (GetMessage(&m, NULL, 0, 0) > 0) {

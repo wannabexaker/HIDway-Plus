@@ -12,10 +12,13 @@ Physical, touchpad and virtual/remote input paths are implemented. The 2026-10-2
 
 - ARM/disarm controls, global toggle and panic hotkeys, floating badge and tray menu.
 - Standalone input monitor with Windows device names, saved custom labels, Identify, per-device counters and optional injected-event observation; see [monitor](docs/INPUT_MONITOR.md).
+- Monitor button, explicit key/button/motion recording with CSV logs, and guarded replay through the normal Pi/Pico output path.
+- Dark Windows setup wizard bundles both apps and guides private networking, Pi relay setup and board-specific BOOTSEL flashing.
 - Connection feedback stays in the HUD, badge, tray status and recent history; Windows notification popups and taskbar flashing are disabled.
 - Independent keyboard/mouse forwarding and Physical, Touchpad, Virtual / remote switches.
-- Explicit Another-PC / This-PC routing, per-source held state and ordered keyboard/mouse transitions.
-- This-PC native cursor placement with Pico keys/clicks/wheels; optional experimental relative Pico movement.
+- Explicit Remote PC / Gaming PC routing, per-source held state and ordered keyboard/mouse transitions.
+- Gaming PC native cursor placement with Pico keys/clicks/wheels; optional experimental relative Pico movement.
+- One-click **Use Pico on this PC** preset in Input options, with local USB-device and relay-address checks; saves without ARM.
 - Configurable virtual click limit and optional hold-to-repeat by button/source/speed; normal drag when repeat is off.
 - Coalesced waitable sender clock, stale-input cancellation and bounded receiver queues with release priority.
 - Full keyboard/button state and cumulative mouse movement over UDP.
@@ -49,6 +52,12 @@ Current test results and hardware limits are in [VALIDATION.md](docs/VALIDATION.
 C11, Win32/Winsock, Linux/POSIX, CMake/Ninja, Pico SDK 2.3.1, TinyUSB and vendored Monocypher 4.0.2. Deployment uses shell scripts and systemd; Windows setup uses PowerShell. Firmware builds target Pico, Pico W, Pico 2 and Pico 2 W.
 
 ## Installation
+
+For normal use, extract the complete Windows release ZIP and run
+`HIDway-Setup.exe`. Follow the six steps; both Windows tools install together.
+See [the installation guide](docs/INSTALLATION.md) for Pi prerequisites, SSH,
+UART wiring, firmware selection, updates and uninstall. The current preview is
+unsigned. Existing compatible Pico firmware supports recording/replay unchanged.
 
 For the Windows client and shared tests, open a Visual Studio developer terminal with the C++ workload, CMake and Ninja available. From the repository root:
 
@@ -85,7 +94,7 @@ Install/configure the Pi using [RELAY.md](docs/RELAY.md). The input-source and c
 4. Start with Physical enabled. ARM forwards input; `Ctrl+Shift+F12` toggles and `Ctrl+Alt+Shift+End` disarms immediately. Hotkeys are configurable.
 5. Disarm before changing sources or configuration. See [input sources](docs/INPUT_SOURCES.md) for remote and loopback behaviour and limitations.
 
-`hidway.ini` is currently relative to the **working directory**, not necessarily the executable directory. Keep that directory consistent, including shortcuts. An encryption key stored there is a plaintext local secret.
+The client loads `hidway.ini` beside its executable, including Explorer and Monitor launches. An encryption key stored there is a plaintext local secret.
 
 ## Project Structure
 

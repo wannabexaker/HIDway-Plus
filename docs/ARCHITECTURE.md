@@ -48,7 +48,7 @@ existing globals.
 
 ## Windows lifecycle
 
-Startup loads hidway.ini from the working directory, creates the HUD/badge
+Startup selects the executable directory, loads the adjacent hidway.ini, creates the HUD/badge
 and registers hotkeys. While disarmed it probes about every 400 ms and updates
 the UI every 50 ms. Disarmed operation installs no capture hooks.
 
@@ -58,10 +58,10 @@ sender clock. The requested rate defaults to 250 Hz; actual cadence depends
 on Windows and GUI scheduling. A pending wake is coalesced, never replayed as a
 burst after a stall.
 
-Another-PC mode uses exclusive foreground badge capture. This-PC mode consumes
+Remote PC mode uses exclusive foreground badge capture. Gaming PC mode consumes
 selected virtual events without taking target-app focus and excludes physical
 recapture. Routing is explicit; source checkbox changes no longer silently
-select another topology. Legacy virtual-only settings migrate to This-PC once.
+select another topology. Legacy virtual-only settings migrate to Gaming PC once.
 
 The input options window is a separate compact settings surface. Opening it
 disarms; ARM is blocked while it is open. Source/output/route changes begin
@@ -178,12 +178,38 @@ unprivileged and hardened. Update authenticity is not a signed release chain;
 local preview builds must identify their source/hash honestly and may later
 be replaced by the configured upstream release policy.
 
+## Monitor recording and replay
+
+`tools/input-monitor/recording.c` expands Raw Input packets into explicit key,
+button, wheel/pan and relative/absolute-motion events. A 4,096-entry bounded
+queue feeds a dedicated disk writer. Only explicit Record writes `.hidrec` plus
+readable CSV; names/evidence stay separate from the numeric replay stream.
+The optional injected-only perspective uses a separate bounded hook-to-UI queue;
+it is never appended to a Raw Input recording. Device-removal resets release the
+corresponding replay ownership, while diagnostic key-up counters stay factual.
+`common/hidway_recording.c` validates the version, bounds, ordering and completion
+footer before output can start. Segments are limited to one hour/500,000 events.
+
+`client/src/replay.c` owns held state per recorded device and scan identity.
+The GUI owns a single replay timeline, pauses it under journal backpressure,
+and publishes to the existing full-state transition journal and UDP sender.
+Replay has a fresh ARM session and no capture hooks/Raw Input registration.
+It never invokes SendInput. Existing-instance WM_COPYDATA only queues a bounded
+path while DISARMED; the user must click Replay and confirm. Stop and normal
+disarm paths free the recording and send RELEASE.
+
+The native `HIDway-Setup.exe` launches the dark WPF wizard. Windows installation
+uses a strict payload manifest, staged file replacement/rollback, per-user
+shortcuts and uninstall registration. The Pi step delegates interactive SSH and
+sudo to the system OpenSSH client; Pico installation validates the BOOTSEL family
+before copying the selected packaged UF2. No Windows driver is installed.
+
 ## Practical boundaries
 
-In This-PC mode the default pointer policy lets remote movement pass natively
+In Gaming PC mode the default pointer policy lets remote movement pass natively
 and does not enqueue it for Pico. Keys, buttons and wheels remain intercepted
 and forwarded. An explicit experimental option routes relative movement through
-Pico; host acceleration/DPI can change absolute remote placement. Another-PC
+Pico; host acceleration/DPI can change absolute remote placement. Remote PC
 exclusive capture still forwards movement through Pico.
 
 Queues protect arrived transitions, not UDP packets lost before arrival.

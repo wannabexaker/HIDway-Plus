@@ -22,6 +22,11 @@ source_physical = 1
 source_touchpad = 0
 source_virtual = 0
 
+# Route: 0 = Remote PC controls Gaming PC; 1 = Gaming PC virtual input loopback.
+# Default same-PC movement stays native; 1 routes relative movement via Pico.
+loopback_mode = 0
+loopback_pointer_pico = 0
+
 # Record recent-input history in the UI (memory only, never written to disk).
 history_enabled = 1
 

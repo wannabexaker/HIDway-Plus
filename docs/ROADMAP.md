@@ -1,6 +1,6 @@
 # HIDway roadmap
 
-Source-based status, reviewed 2026-10-28. [ARCHITECTURE.md](ARCHITECTURE.md)
+Source-based status, reviewed 2026-10-29. [ARCHITECTURE.md](ARCHITECTURE.md)
 describes the implementation; [VALIDATION.md](VALIDATION.md) separates automated
 checks, hardware observations and remaining acceptance work.
 
@@ -15,7 +15,7 @@ Actual input acceptance remains separate from installation and automated tests.
 
 ## Implemented input improvements
 
-Per-source ownership and overlap tests; explicit Another-PC/This-PC routing;
+Per-source ownership and overlap tests; explicit Remote PC/Gaming PC routing;
 scan-less virtual fallback and Unicode guard; stable DOWN identity across
 layout changes; capture generations, queue failures and age cancellation;
 fresh ARM sessions and ordered STATUS handling; waitable-clock sender;
@@ -32,7 +32,17 @@ versions, foreground behaviour, duplicate suppression and target release
 results. [INPUT_TESTING.md](INPUT_TESTING.md) lists acceptance cases.
 Do not mark this complete from helper tests alone.
 
+The user confirmed working AION2 input after an elevated Gaming PC HIDway launch
+and relative mouse mode in laptop Moonlight. This accepts that configuration;
+broader driver coverage and same-host Raw Input isolation remain separate work.
+
 ## Reliability and release quality
+
+The recording/setup preview includes bundled Windows tools, the Monitor launcher,
+explicit key/button/motion logs, guarded Pi/Pico replay, and a dark six-step
+Windows/Pi/Pico wizard. Complete the actual-device recording/replay matrix and
+interactive clean-machine install/update/uninstall acceptance before a stable
+release. Preview packaging remains unsigned.
 
 - Measure real packet timing, click pacing and combined modifier/click ordering
   under USB, UART and stream load. Automated FIFO tests do not prove arrival

@@ -5,8 +5,9 @@ Record client/relay/firmware versions, route, enabled sources and actual driver.
 
 ## Safe target
 
-Use the separate input counter on the USB target PC. Keep it foreground and
-use its empty surface. It has no hooks, network or input injection. Raw Input
+Use Input Monitor on the USB target PC. Keep it foreground for clear comparison;
+background counting is explicitly available. Its optional observer hooks are
+off by default, and it has no network or input injection. Raw Input
 rows separate devices and label the default Pico VID/PID. Keyboard repeats
 are separate from unique DOWNs; mouse Held is a bitmask.
 
@@ -15,13 +16,32 @@ A focus change makes the observation incomplete; restart that case. The counter
 reports aggregate relative motion and both wheel axes; it does not measure
 latency, absolute cursor coordinates or whether a game accepts a report.
 Those need separate observations. Optional numeric reporting overwrites a
-single file and records no key names or typed text. Counts pause while the
-counter is in the background; a background Held value may therefore be stale.
+single file and records no key names or typed text. The separate explicit Record
+feature does save key identities and motion; keep test recordings private.
+If background counting is disabled, a focus change starts a fresh count epoch.
 
-## Another-PC route
+## Recording/replay acceptance (one operator)
+
+1. Open Monitor on the input-source PC, release held inputs, select a scope and
+   Record to a new file. Press A, right Ctrl, keypad Enter, all five mouse buttons,
+   wheel rotation and horizontal wheel; move/drag slowly. Stop/Save.
+2. Verify key names plus scan/E0/E1/VK in CSV, balanced down/up pairs, and separate
+   Middle press versus wheel units. Confirm Windows evidence versus manual labels.
+3. Put the target Monitor/test window in front. Replay in HIDway, review the
+   destination and confirm. Compare target Pico events after the countdown.
+   Keyboard layout and relative pointer acceleration are separate observations.
+4. Replay again and press PANIC mid-hold. Verify released target state and no
+   later clicks. Repeat Stop, link loss and session-lock cases separately.
+5. For long logging, observe visible Record status, file growth and segment
+   limits. Simulate unwritable storage only in an isolated test folder; failures
+   must leave an explicit failure, not a seemingly complete recording.
+
+Automated state/parser/writer checks do not replace this hardware acceptance.
+
+## Remote PC route
 
 1. Start disarmed with normal repeat OFF. Select the intended local/virtual
-   sources and Another-PC route.
+   sources and Remote PC route.
 2. Ten slow left clicks: Pico DOWN/UP counts both increase by ten, Held=0.
 3. Ten short keys, modifiers, arrows, keypad, mouse side buttons, drag and both
    wheel axes. Check final releases and application behavior.
@@ -45,11 +65,11 @@ counter is in the background; a background Held value may therefore be stale.
 - Repeat OFF restores normal dragging. Another source's continuous same-button
   hold can intentionally mask repeat pulses under OR ownership.
 
-## This-PC route
+## Gaming PC route
 
 1. Stage the client and counter on the Pico USB host. Permit that PC's exact
    private IP at the relay; do not remove the laptop peer accidentally.
-2. Choose This PC through Pico. Only Virtual is forwarded; native physical
+2. Choose Gaming PC through Pico. Only Virtual is forwarded; native physical
    input remains local. Repeat cannot transform native bypass input.
    Start with Native position for the pointer; only keys/buttons/wheels use
    Pico in that setting. Test the relative Pico pointer separately if needed.

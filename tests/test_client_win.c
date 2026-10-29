@@ -1,10 +1,28 @@
 /* Regression coverage of production handlers. Hidden fixture controls only;
- * no global hooks, sockets or physical HID devices are opened by this test. */
+ * no global hooks or physical HID devices are opened. Peer-address checks
+ * connect UDP sockets without sending any packets. */
 #define hidway_net_send test_send
 #define hidway_net_recv test_recv
+#define hidway_net_peer_is_loopback test_peer_is_loopback
+#define hidway_local_pico_interfaces test_local_pico_interfaces
+#define hidway_config_save test_config_save
 #include "../client/src/main.c"
 #undef hidway_net_send
 #undef hidway_net_recv
+#undef hidway_net_peer_is_loopback
+#undef hidway_local_pico_interfaces
+#undef hidway_config_save
+
+int hidway_net_peer_is_loopback(void);
+static int fixture_peer,fixture_save_ok=1,fixture_saves;
+static unsigned fixture_pico;
+static hidway_config_t fixture_saved;
+int test_peer_is_loopback(void) { return fixture_peer; }
+unsigned test_local_pico_interfaces(const char *token) { (void)token; return fixture_pico; }
+int test_config_save(const char *path,const hidway_config_t *cfg)
+{
+    (void)path;fixture_saves++;fixture_saved=*cfg;return fixture_save_ok;
+}
 
 static hidway_input_pkt_t output[16];
 static unsigned output_count;
@@ -37,6 +55,7 @@ int test_recv(uint8_t *buf, size_t cap)
 
 static void reset_client(void)
 {
+    hw_rec_free(&replay.file);memset(&replay,0,sizeof replay);
     memset(&g, 0, sizeof g);
     g.preview = 1; /* prevent real capture shutdown when testing disarm */
     g.armed = g.net_ok = 1;
@@ -313,10 +332,89 @@ int main(void)
     VERIFY(!IsWindow(options) && g.cfg.repeat_enabled && g.cfg.repeat_cps == 15 &&
            g.cfg.virtual_click_cps == 7 && g.cfg.loopback_mode&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&
            g.cfg.loopback_pointer_pico);
+
+    /* The one-click preset never rewrites the Pi address, arms, or writes
+     * settings when either required USB collection or relay peer is missing. */
+    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
+    strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
+    g.cfg.source_touchpad=1;g.cfg.repeat_enabled=1;
+    g.cfg.loopback_pointer_pico=1;
+    options=CreateWindowExA(0,wc.lpszClassName,"Preset fixture",0,0,0,470,520,NULL,NULL,g.inst,NULL);
+    g.options=options;VERIFY(options!=NULL);
+    fixture_pico=HIDWAY_PICO_READY;fixture_peer=1;fixture_saves=0;
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves&&!g.armed);
+    fixture_peer=-1;
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves);
+    fixture_peer=0;
+    for(unsigned present=0;present<HIDWAY_PICO_READY;present++) {
+        fixture_pico=present;
+        options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+        VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves);
+    }
+    fixture_pico=HIDWAY_PICO_READY;fixture_save_ok=0;
+    hidway_config_t before=g.cfg;
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(IsWindow(options)&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&!g.armed);
+    /* Ordinary Apply also keeps runtime config unchanged on save failure. */
+    SendMessageA(g.route,CB_SETCURSEL,1,0);
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),0);
+    VERIFY(IsWindow(options)&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==2);
+    fixture_save_ok=1;
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(!IsWindow(options)&&fixture_saves==3&&!g.armed);
+    VERIFY(g.cfg.loopback_mode&&g.cfg.source_virtual&&!g.cfg.loopback_pointer_pico&&!g.cfg.repeat_enabled);
+    VERIFY(g.cfg.source_physical&&g.cfg.source_touchpad&&input_source_mask()==HIDWAY_SOURCE_VIRTUAL);
+    VERIFY(g.cfg.relay_keyboard&&g.cfg.relay_mouse&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL);
+    VERIFY(!strcmp(g.cfg.target,"192.0.2.10")&&g.cfg.port==47800&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg));
+    VERIFY(hidway_net_peer_is_loopback()==-1);
+    VERIFY(hidway_net_open("127.0.0.2",47801)==0&&hidway_net_peer_is_loopback()==1);
+    hidway_net_close();
+    VERIFY(hidway_net_open("::1",47801)==0&&hidway_net_peer_is_loopback()==1);
+    hidway_net_close();
+    /* Some Windows configurations use IPv6-only sockets and reject mapped
+     * peers before connection; if connected, the guard must still reject it. */
+    if(hidway_net_open("::ffff:127.0.0.1",47801)==0)
+        VERIFY(hidway_net_peer_is_loopback()==1);
+    hidway_net_close();
+    VERIFY(hidway_net_open("192.0.2.10",47801)==0&&hidway_net_peer_is_loopback()==0);
+    hidway_net_close();VERIFY(hidway_net_peer_is_loopback()==-1);
     reset_client();uint32_t old_session=g.session_id;
     set_armed(0);set_armed(1);
     VERIFY(g.armed&&g.session_id!=old_session&&g.seq==1&&output[3].session_id==g.session_id);
     set_armed(0);
+    /* Replay ownership is per device and raw scan identity, independent of
+     * live capture policy, aliases and hold-repeat settings. */
+    static hidway_replay_state state;hw_rec_screen screen={1920,1080,3840,1080};
+    hw_rec_event event={0,0,HW_REC_KEY_DOWN,30,0,0,0,'A'};
+    VERIFY(hidway_replay_apply(&state,&screen,&event)&&hidway_bitmap_test(state.frame.keyboard.keys,4));
+    event.device=1;VERIFY(hidway_replay_apply(&state,&screen,&event));
+    event.device=0;event.type=HW_REC_KEY_UP;VERIFY(hidway_replay_apply(&state,&screen,&event)&&hidway_bitmap_test(state.frame.keyboard.keys,4));
+    event.device=1;VERIFY(hidway_replay_apply(&state,&screen,&event)&&!hidway_bitmap_test(state.frame.keyboard.keys,4));
+    event.type=HW_REC_KEY_DOWN;VERIFY(hidway_replay_apply(&state,&screen,&event));event.device=0;VERIFY(hidway_replay_apply(&state,&screen,&event));
+    event=(hw_rec_event){0,0,HW_REC_RELEASE_DEVICE,0,0,0,0,0};VERIFY(hidway_replay_apply(&state,&screen,&event)&&hidway_bitmap_test(state.frame.keyboard.keys,4));
+    event.device=1;VERIFY(hidway_replay_apply(&state,&screen,&event)&&!hidway_bitmap_test(state.frame.keyboard.keys,4));
+    event=(hw_rec_event){0,2,HW_REC_WHEEL,0,0,60,0,0};VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.wheel==0);
+    VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.wheel==1&&state.frame.buttons==0);
+    event=(hw_rec_event){0,2,HW_REC_BUTTON_DOWN,2,0,0,0,0};VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.buttons==4);
+    event.device=3;VERIFY(hidway_replay_apply(&state,&screen,&event));event.device=2;event.type=HW_REC_BUTTON_UP;
+    VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.buttons==4);
+    event.device=3;VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.buttons==0);
+    event=(hw_rec_event){0,4,HW_REC_ABSOLUTE,0,0,100,200,0};VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.x==0);
+    event.x=32768;VERIFY(hidway_replay_apply(&state,&screen,&event)&&state.frame.x>900&&state.frame.x<1000);
+    uint16_t binding;event=(hw_rec_event){0,0,HW_REC_KEY_DOWN,0,0,0,0,VK_PACKET};VERIFY(!hidway_replay_binding(&event,&binding));
+    event.code=0x03b1;VERIFY(!hidway_replay_apply(&state,&screen,&event));
+    reset_client();g.cfg.repeat_enabled=1;
+    replay.active=1;replay.file.events=calloc(1,sizeof(hw_rec_event));replay.file.count=1;replay.file.duration=1000;replay.file.screen=screen;
+    replay.file.events[0]=(hw_rec_event){0,0,HW_REC_BUTTON_DOWN,0,0,0,0,0};replay.started=timeGetTime();replay.last_tick=replay.started;
+    replay_tick();VERIFY(replay.next==1&&replay.state.frame.buttons==1);
+    on_capture_mouse(WM_RBUTTONDOWN,0);on_capture_key('B',0x30);VERIFY(!g.held.buttons&&!g.modifiers&&!hidway_bitmap_test(g.keys,5));
+    net_send_state(HIDWAY_MSG_STATE);VERIFY(output_count&&output[0].buttons==1);
+    wnd_proc(NULL,WM_HOTKEY,HK_PANIC,0);VERIFY(!g.armed&&!replay.active&&!replay.file.events&&output[output_count-1].type==HIDWAY_MSG_RELEASE);
+    reset_client();COPYDATASTRUCT invalid={RECORDING_IPC,3,(void *)L"x"};VERIFY(!wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&invalid));
+    wchar_t loadpath[]=L"C:\\test.hidrec";COPYDATASTRUCT data={RECORDING_IPC,sizeof loadpath,loadpath};VERIFY(!wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data));
+    g.armed=0;VERIFY(wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data)&&!wcscmp(replay.path,loadpath)&&!g.armed);
     printf("Client regression tests: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

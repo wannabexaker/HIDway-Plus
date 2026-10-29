@@ -9,6 +9,10 @@
 int hidway_net_open(const char *host, int port);
 void hidway_net_close(void);
 
+/* Connected peer: 1 for loopback, 0 for another host, -1 if unavailable.
+ * Inspects the resolved socket address without sending a packet. */
+int hidway_net_peer_is_loopback(void);
+
 /* Post `msg` to the window `hwnd` whenever a reply is waiting, so it is read
  * (and its RTT measured) on arrival rather than at the next timer tick. Call
  * again after every hidway_net_open. Returns 0 on success. */

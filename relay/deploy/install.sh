@@ -7,6 +7,7 @@
 # settings (written to /etc/hidway/hidwayd.conf; others are left as they are):
 #   --bind IP|auto       Tailscale address of this Pi (auto: ask Tailscale)
 #   --allow IP           Tailscale address of the PC you play from
+#   --allow-add IP       add a sender without removing existing peers (max 8)
 #   --uart gpio|usb      gpio: Pico wired to the Pi 4's GPIO UART3 (enabled
 #                        now and kept after reboots); usb: Debug Probe/adapter
 #   --serial DEV         serial device, if not /dev/hidway-serial
@@ -53,6 +54,7 @@ REPO_SET=0
 REF_SET=0
 CHANGED=0
 CONF_KV=() # KEY=value settings for hidwayd.conf, from the command line
+ALLOW_ADD=()
 UART=
 
 say() { printf '==> %s\n' "$*"; }
@@ -121,6 +123,7 @@ ipv4_ok() {
     [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
     local o
     for o in "${BASH_REMATCH[@]:1}"; do
+        [[ $o == 0 || $o != 0* ]] || return 1
         ((10#$o <= 255)) || return 1
     done
 }
@@ -140,6 +143,10 @@ parse_setting() { # parse_setting <opt> <value>
     --allow)
         ipv4_ok "$v" || die "--allow: not an IPv4 address: $v"
         CONF_KV+=("HIDWAY_ALLOW=$v")
+        ;;
+    --allow-add)
+        ipv4_ok "$v" || die "--allow-add: not an IPv4 address: $v"
+        ALLOW_ADD+=("$v")
         ;;
     --serial)
         [[ $v =~ ^/dev/[A-Za-z0-9/._-]+$ ]] || die "--serial: not a device path: $v"
@@ -163,6 +170,35 @@ parse_setting() { # parse_setting <opt> <value>
         ;;
     *) return 1 ;;
     esac
+}
+
+merge_allowed_senders() {
+    ((${#ALLOW_ADD[@]})) || return 0
+    local base= extra= kv list ip found joined= p
+    local peers=() parts=()
+    if [[ -f $ETC/hidwayd.conf ]]; then
+        base=$(sed -n 's/^HIDWAY_ALLOW=//p' "$ETC/hidwayd.conf" | tail -n 1)
+        extra=$(sed -n 's/^HIDWAY_ALLOW_EXTRA=//p' "$ETC/hidwayd.conf" | tail -n 1)
+    fi
+    [[ $base == '<'* ]] && base=
+    for kv in ${CONF_KV[@]+"${CONF_KV[@]}"}; do
+        [[ $kv == HIDWAY_ALLOW=* ]] && base=${kv#*=}
+    done
+    for list in "$base" "$extra" "${ALLOW_ADD[@]}"; do
+        [[ -n $list ]] || continue
+        IFS=, read -r -a parts <<<"$list"
+        for ip in "${parts[@]}"; do
+            ipv4_ok "$ip" || die "invalid existing allowed sender: $ip"
+            found=0
+            for p in ${peers[@]+"${peers[@]}"}; do [[ $p == "$ip" ]] && found=1; done
+            if [[ $found == 0 ]]; then
+                ((${#peers[@]} < 8)) || die "at most eight allowed senders; existing peers retained"
+                peers+=("$ip")
+            fi
+        done
+    done
+    for ((p=1;p<${#peers[@]};p++)); do joined+=${joined:+,}${peers[p]}; done
+    CONF_KV+=("HIDWAY_ALLOW=${peers[0]}" "HIDWAY_ALLOW_EXTRA=$joined")
 }
 
 # Pi 4: UART3 on GPIO4 (TX) / GPIO5 (RX) for a direct wire to the Pico, now
@@ -347,6 +383,7 @@ main() {
             ;;
         esac
     done
+    merge_allowed_senders # validate/merge before anything changes
     if [[ $UART == gpio ]]; then
         check_gpio_uart # before anything changes
     fi

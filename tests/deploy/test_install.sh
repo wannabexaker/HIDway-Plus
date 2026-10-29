@@ -85,6 +85,16 @@ for bad in "--allow 1.2.3" "--allow 100.64.1.300" "--bind 10.0.0.256" "--wake-ma
     check "refuses $bad" not run --configure $bad
 done
 check "  config untouched after refusals" cmp -s "$work/before" "$R/etc/hidway/hidwayd.conf"
+check "add Gaming PC while preserving Remote PC" run --configure --allow-add 100.64.8.8
+check "  Remote PC primary retained" test "$(conf HIDWAY_ALLOW)" = 100.64.9.9
+check "  Gaming PC added" test "$(conf HIDWAY_ALLOW_EXTRA)" = 100.64.8.8
+cp "$R/etc/hidway/hidwayd.conf" "$work/before"
+check "add same PC again" run --configure --allow-add 100.64.8.8
+check "  add is idempotent" cmp -s "$work/before" "$R/etc/hidway/hidwayd.conf"
+check "refuse invalid new sender" not run --configure --allow-add '100.64.8.8;reboot'
+check "refuse ambiguous leading-zero address" not run --configure --allow-add 010.0.0.1
+check "refuse more than eight peers" not run --configure --allow-add 10.0.0.1 --allow-add 10.0.0.2 --allow-add 10.0.0.3 --allow-add 10.0.0.4 --allow-add 10.0.0.5 --allow-add 10.0.0.6 --allow-add 10.0.0.7
+check "  failed add keeps both PCs" cmp -s "$work/before" "$R/etc/hidway/hidwayd.conf"
 check "refuses an unknown option" not run --configure --colour red
 check "refuses an option without a value" not run --configure --allow
 check "  ...and says so" out_has "needs a value"

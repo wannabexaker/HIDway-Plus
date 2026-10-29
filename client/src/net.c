@@ -76,6 +76,22 @@ int hidway_net_notify(void *hwnd, unsigned msg)
     return WSAAsyncSelect(sock, (HWND)hwnd, msg, FD_READ) == 0 ? 0 : -1;
 }
 
+int hidway_net_peer_is_loopback(void)
+{
+    struct sockaddr_storage peer;
+    int size = sizeof peer;
+    if (sock == INVALID_SOCKET || getpeername(sock, (struct sockaddr *)&peer, &size) != 0)
+        return -1;
+    if (peer.ss_family == AF_INET)
+        return (ntohl(((struct sockaddr_in *)&peer)->sin_addr.s_addr) >> 24) == 127;
+    if (peer.ss_family == AF_INET6) {
+        const IN6_ADDR *addr = &((struct sockaddr_in6 *)&peer)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(addr)) return 1;
+        return IN6_IS_ADDR_V4MAPPED(addr) && addr->u.Byte[12] == 127;
+    }
+    return -1;
+}
+
 int hidway_net_send(const uint8_t *buf, size_t len)
 {
     if (sock == INVALID_SOCKET)

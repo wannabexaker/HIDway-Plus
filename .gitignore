@@ -59,6 +59,10 @@ hidway-input-monitor.ini
 hidway-input-monitor.ini.tmp
 aggregate-counts.json
 aggregate-counts.tmp
+*.hidrec
+*.hidrec.csv
+*.hidrec.partial
+*.hidrec.csv.partial
 monitor-test-aliases.ini*
 
 # Private development notes and local setup photographs
