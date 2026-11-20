@@ -32,9 +32,30 @@ function Get-HidwayPayload([string]$Source,[switch]$ManifestOnly) {
     if (@($files | ForEach-Object {$_.ToLowerInvariant()} | Select-Object -Unique).Count -ne $files.Count) { throw 'Duplicate package paths.' }
     return $files
 }
+function Get-HidwayOneDriveProblem([string]$Path) {
+    # OneDrive is refused on purpose: its sync folders are reparse points that are not junctions or symbolic links.
+    $message = 'HIDway does not work from a OneDrive or other cloud-synced folder (sync and Files On-Demand are not supported). Use a normal local folder outside OneDrive, for example C:\HIDway.'
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    foreach ($root in @($env:OneDrive,$env:OneDriveConsumer,$env:OneDriveCommercial)) {
+        if (-not $root) { continue }
+        $root = [IO.Path]::GetFullPath($root).TrimEnd('\')
+        if ($root.Length -gt 3 -and ($full -eq $root -or $full.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase))) { return $message }
+    }
+    for ($part = $full; $part -and $part.Length -gt 2; $part = [IO.Path]::GetDirectoryName($part)) {
+        if (-not (Test-Path -LiteralPath $part)) { continue }
+        $item = Get-Item -LiteralPath $part -Force
+        if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $link = $item.PSObject.Properties['LinkType']
+        if (-not $link -or [string]$link.Value -notin @('Junction','SymbolicLink')) { return $message }
+    }
+    return ''
+}
 function Assert-HidwayInstallPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    if ($full.Length -lt 8 -or $full -eq [IO.Path]::GetPathRoot($full).TrimEnd('\')) { throw 'Choose a dedicated HIDway folder, not a drive root.' }
+    $oneDrive = Get-HidwayOneDriveProblem $full
+    if ($oneDrive) { throw $oneDrive }
+    if ($full -eq [IO.Path]::GetPathRoot($full).TrimEnd('\')) { throw 'Choose a dedicated HIDway folder, not a drive root.' }
+    if ($full.Length -lt 8) { throw "Choose a folder whose full path has at least 8 characters, such as C:\HIDway or D:\Tools\HIDway ('$full' is too short)." }
     foreach ($protected in @($env:WINDIR,$env:USERPROFILE,$env:LOCALAPPDATA,$env:ProgramFiles,${env:ProgramFiles(x86)})) {
         if ($protected -and $full -eq [IO.Path]::GetFullPath($protected).TrimEnd('\')) { throw 'Choose a dedicated HIDway subfolder.' }
     }
@@ -44,6 +65,59 @@ function Assert-HidwayInstallPath([string]$Path) {
         $part = [IO.Path]::GetDirectoryName($part)
     }
     return $full
+}
+function Test-HidwayFileAssociation([string]$Extension) {
+    # True when Windows has a default program for the extension (otherwise it would show the "how to open" prompt).
+    try {
+        $key = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey($Extension)
+        if ($key) { try { if ([string]$key.GetValue('')) { return $true } } finally { $key.Dispose() } }
+        $choice = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\'+$Extension+'\UserChoice')
+        if ($choice) { try { return [bool][string]$choice.GetValue('ProgId') } finally { $choice.Dispose() } }
+    } catch {}
+    return $false
+}
+function Test-HidwayInstalledHere([string]$Folder,[string]$PackageRoot,[string]$Registered) {
+    # True when the chosen folder is the registered installation, the folder the wizard itself runs from, and the tools are there.
+    try {
+        $chosen = [IO.Path]::GetFullPath($Folder).TrimEnd('\'); $here = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
+        return $Registered -and $chosen -ieq $here -and $Registered.TrimEnd('\') -ieq $here -and (Test-Path -LiteralPath (Join-Path $here 'hidway-client.exe') -PathType Leaf)
+    } catch { return $false }
+}
+function Get-HidwayDefaultSerial([string]$Uart) {
+    # /dev/hidway-serial is the stable udev name of the Pi 4 GPIO UART3 (relay/deploy/99-hidway.rules).
+    if ($Uart -eq 'gpio') { return '/dev/hidway-serial' }
+    return '/dev/ttyUSB0'
+}
+function Get-HidwayBootselDrives([string[]]$Roots) {
+    if (-not $Roots) { $Roots = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.DriveType -in @([IO.DriveType]::Removable,[IO.DriveType]::Fixed) } | ForEach-Object { $_.Name }) }
+    return @($Roots | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'INFO_UF2.TXT') -PathType Leaf })
+}
+function Get-HidwayTailscaleIPv4([string]$Exe,[int]$TimeoutMs=3000) {
+    # Local CLI only; any failure is silent and gives ''.
+    try {
+        if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return '' }
+        $info = New-Object Diagnostics.ProcessStartInfo $Exe,'ip -4'
+        $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true; $info.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($info)
+        try {
+            $read = $process.StandardOutput.ReadToEndAsync()
+            if (-not $process.WaitForExit($TimeoutMs)) { try { $process.Kill() } catch {}; return '' }
+            $first = ([string]$read.Result -split '\r?\n' | Select-Object -First 1)
+            if ($first -and (Test-HidwayIPv4 $first.Trim())) { return $first.Trim() }
+        } finally { $process.Dispose() }
+    } catch {}
+    return ''
+}
+function Set-HidwaySunshineInputOff([string]$Conf) {
+    # Sunshine's own keyboard/mouse/controller off. Other lines are kept; an existing file is backed up first.
+    if (Test-Path -LiteralPath $Conf -PathType Leaf) {
+        Copy-Item -LiteralPath $Conf -Destination ($Conf+'.bak-'+(Get-Date -Format yyyyMMdd-HHmmss)) -ErrorAction Stop
+        $lines = @([IO.File]::ReadAllLines($Conf) | Where-Object { $_ -notmatch '^\s*(keyboard|mouse|controller)\s*=' })
+    } else {
+        $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($Conf)) -Force; $lines = @()
+    }
+    $lines += 'keyboard = disabled','mouse = disabled','controller = disabled'
+    [IO.File]::WriteAllLines($Conf,[string[]]$lines,(New-Object Text.UTF8Encoding($false)))
 }
 function Get-HidwayInstallationFolder([string]$RegistryKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HIDway') {
     $registration=Get-ItemProperty -LiteralPath $RegistryKey -ErrorAction SilentlyContinue
@@ -155,10 +229,10 @@ function Initialize-HidwayConfig([string]$Destination,[string]$RelayIP,[bool]$Ga
 }
 function Test-HidwayIPv4([string]$Value) {
     $ip = $null
-    return $Value -match '^\d{1,3}(\.\d{1,3}){3}$' -and [Net.IPAddress]::TryParse($Value,[ref]$ip) -and $ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and $ip.ToString() -eq $Value -and $Value -ne '0.0.0.0'
+    return $Value -match '^\d{1,3}(\.\d{1,3}){3}\z' -and [Net.IPAddress]::TryParse($Value,[ref]$ip) -and $ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and $ip.ToString() -eq $Value -and $Value -ne '0.0.0.0'
 }
 function Get-HidwaySshTarget([string]$PiHost,[string]$PiUser) {
-    if ($PiHost -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$' -or $PiHost.Contains('..') -or $PiUser -notmatch '^[a-z_][a-z0-9_-]{0,31}$') { throw 'Enter a hostname/IPv4 and a Linux username. Spaces and shell commands are not allowed.' }
+    if ($PiHost -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}\z' -or $PiHost.Contains('..') -or $PiUser -notmatch '^[a-z_][a-z0-9_-]{0,31}\z') { throw 'Enter a hostname/IPv4 and a Linux username. Spaces and shell commands are not allowed.' }
     return "$PiUser@$PiHost"
 }
 function Get-HidwayPicoFile([string]$Source,[string]$Board,[string]$Drive) {

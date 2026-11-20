@@ -157,7 +157,7 @@ function Install-HIDway {
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if (Ask '  Start HIDway with Windows?' $false) {
         Set-ItemProperty $run -Name HIDway -Value "`"$exe`""
-    } else {
+    } elseif (-not $Yes) { # -Yes takes no decision: an existing autostart entry stays
         Remove-ItemProperty $run -Name HIDway -ErrorAction SilentlyContinue
     }
 }
@@ -203,20 +203,18 @@ function After-Sunshine {
     Say '  desktop and the login screen, ignored by games that need HIDway.' DarkGray
     if (-not (Ask '  Turn Sunshine''s own keyboard/mouse OFF (HIDway only)?' $false)) { return }
     if ($WhatIf) { return }
-    $cmd = {
-        $conf = Join-Path $env:ProgramFiles 'Sunshine\config\sunshine.conf'
-        New-Item -ItemType File -Force -Path $conf -ErrorAction SilentlyContinue | Out-Null
-        Copy-Item $conf "$conf.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
-        $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^\s*(keyboard|mouse|controller)\s*=' })
-        $lines += 'keyboard = disabled', 'mouse = disabled', 'controller = disabled'
-        Set-Content -Path $conf -Value $lines -Encoding ASCII
-        Restart-Service SunshineService -ErrorAction SilentlyContinue
-    }
+    . (Join-Path $PSScriptRoot 'hidway-setup-core.ps1') # Set-HidwaySunshineInputOff
+    $conf = Join-Path $env:ProgramFiles 'Sunshine\config\sunshine.conf'
     if (Test-Admin) {
-        & $cmd
+        Set-HidwaySunshineInputOff $conf
+        Restart-Service SunshineService -ErrorAction SilentlyContinue
     } else { # writes under Program Files: ask Windows for administrator rights once
-        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd.ToString()))
-        Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-EncodedCommand', $enc
+        $quoted = "'" + $conf.Replace("'", "''") + "'"
+        $cmd = "`$ErrorActionPreference = 'Stop'; function Set-HidwaySunshineInputOff { ${function:Set-HidwaySunshineInputOff} }; try { Set-HidwaySunshineInputOff $quoted; Restart-Service SunshineService -ErrorAction SilentlyContinue; exit 0 } catch { exit 1 }"
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+        $ps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $p = Start-Process -FilePath $ps -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-EncodedCommand', $enc
+        if ($p.ExitCode -ne 0) { throw 'Sunshine settings were not changed (the administrator step failed or was cancelled).' }
     }
     Say '  Sunshine: keyboard/mouse/controller input off (backup kept next to sunshine.conf).' Green
 }

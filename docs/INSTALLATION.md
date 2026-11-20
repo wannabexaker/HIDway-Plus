@@ -19,6 +19,17 @@ saved PC role are selected. The Start menu contains HIDway, Input Monitor,
 Setup guide and Check for updates.
 An optional desktop shortcut and an Installed apps uninstall entry are provided.
 
+**Folders.** Use a normal local folder. OneDrive and other cloud-synced folders
+are refused on purpose, for the installation folder and for the folder the ZIP
+was extracted to: the wizard says so in its status line as soon as it can tell,
+and names the remedy (a local folder such as `C:\HIDway`). Junctions and
+symbolic links are refused too. The full path needs at least 8 characters
+(`D:\HIDway` is fine, `D:\HID` is not), the same rule the updater applies.
+
+**Setup guide from the Start menu.** Opened from the installed folder, the
+wizard does not install again: the Windows step shows that the tools are already
+there and **Next** continues with the network, Pi relay and Pico steps.
+
 **Remote PC** means the sending laptop/PC. **Gaming PC** means the computer with
 the Pico HID USB connected. The Gaming PC role runs virtual-only loopback when
 HIDway itself runs there. These names replace the earlier Another PC / This PC
@@ -55,6 +66,12 @@ the new client Target; the default port is UDP 47800. Existing client settings
 are not overwritten. Additional permitted senders and matching optional
 encryption keys are configured using [relay operations](RELAY.md).
 
+When Tailscale is installed on this PC, the sending-PC box is pre-filled with
+its Tailscale IPv4 (from the local `tailscale ip -4`); check it and correct it
+for a LAN setup. If the relay is already set up, tick **The relay is already
+configured, or I will set it up later** at the top of this page: the address
+boxes are then optional and the wizard skips the Pi relay step.
+
 ## 3. Raspberry Pi relay
 
 Start from Raspberry Pi OS with SSH enabled and your own Linux account. Install
@@ -77,7 +94,21 @@ explicit action. GPIO automation supports Pi 4/400/CM4 UART3; use a USB UART
 adapter for other Pi models. Internet access on the Pi is required for source,
 dependencies and build. This is guided installation, not a Raspberry Pi OS imager.
 
-For an already configured relay, choose **already configured / later** and keep
+**Serial device.** Choosing **USB serial adapter** or **Pi GPIO UART** fills in
+the usual device (`/dev/ttyUSB0`, or `/dev/hidway-serial` for the Pi 4 GPIO
+UART3). That default is used only for a first installation: a relay that is
+already configured keeps its serial device, so running this step again to add
+a second PC does not change it. Type a different path to change the device of
+an existing relay deliberately.
+
+The bundled installer is copied to the Pi on its own; it takes its example
+configuration and updater from the repository checkout it creates under
+`/opt/hidway/src`, and checks that they exist before changing anything in
+`/etc/hidway`. The temporary copy under `~/.cache/hidway-setup-*` is removed
+when the installation command ends.
+
+For an already configured relay, choose **already configured / later** on the
+network page and keep
 its settings. Authentication failures, a wrong serial device or missing wiring
 must be corrected before the hardware path can work. Service-active alone does
 not prove USB input delivery.
@@ -86,7 +117,9 @@ not prove USB input delivery.
 
 Use this step on the Windows PC physically connected to the Pico. Select the
 exact board: Pico, Pico W, Pico 2 or Pico 2 W. Hold BOOTSEL while reconnecting
-its USB. Enter the drive root containing `INFO_UF2.TXT` and click **Verify drive
+its USB. The wizard looks for a drive containing `INFO_UF2.TXT` when this page
+opens and when you click **Detect BOOTSEL drive**; a single match is filled in,
+and you can always type the drive root yourself. Click **Verify drive
 and copy firmware**. The wizard checks the RP2040/RP2350 family and package hashes,
 then asks for confirmation before copying the selected UF2. BOOTSEL cannot
 distinguish W/non-W variants reliably; read the board label yourself.
@@ -117,7 +150,7 @@ See [recording limitations](INPUT_MONITOR.md) before comparing timing/coordinate
 
 Use **Updates** in HIDway or **Check for updates** in Monitor/the Start menu.
 Check, download and verify the complete stable release; then save any recording,
-DISARM and close both apps before **Install both apps**. No input session is
+DISARM and close both apps before **Install**. No input session is
 terminated automatically. See [Windows updates](UPDATES.md) for release availability,
 preview versions and trust limits. You can also run the new extracted package's
 wizard to update the detected installation folder. Uninstall via
@@ -125,7 +158,13 @@ Windows Installed apps. Local configuration, labels and recordings remain.
 Recorded key identities can reveal typed information; choose a private output
 folder and avoid passwords. Recordings are never included in the release.
 
+The wizard's guide buttons open the bundled Markdown files with the program
+Windows associates with `.md`, or in Notepad when there is none.
+
 CLI setup remains available using `Setup.cmd -Role player -Install HIDway -Yes`.
+With `-Yes` an existing "start with Windows" entry is left as it is. The
+optional Sunshine step keeps the other lines of `sunshine.conf` and saves a
+backup copy next to it before changing the three input settings.
 Developers can build the root CMake project and package existing firmware with
 `tools/package-windows.ps1 -BuildDir <build> -FirmwareDir <four-UF2-folder>
 -OutDir <ignored-output> -Version <version>`. CI uses `tools/ci/package.sh` and

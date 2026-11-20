@@ -126,5 +126,80 @@ check "  hidway-wake is executable" test -x "$R/usr/local/bin/hidway-wake"
 check "--refresh again changes nothing" run --refresh "$DEPLOY"
 check "  quiet the second time" not out_has "installed"
 
+
+# --serial-default is validated like --serial
+for bad in "--serial-default /dev/x;reboot" "--serial-default ttyUSB0"; do
+    setup
+    # shellcheck disable=SC2086
+    check "refuses $bad" not run --configure $bad --allow 100.64.9.9
+done
+
+# full install with stub tools: install.sh copied alone (as the Windows wizard
+# does) and run from a normal checkout. git clone is faked: the "checkout" is a
+# copy of relay/deploy whose hidway-update only logs its arguments.
+full_setup() {
+    setup
+    mkdir -p "$work/clone-src"
+    for t in getent groupadd useradd runuser flock make cc; do
+        printf '#!/bin/sh\nexit 0\n' >"$work/bin/$t"
+    done
+    # shellcheck disable=SC2016
+    printf '#!/bin/sh\nif [ "$1" = clone ]; then\n  mkdir -p "$4/.git"\n  [ -n "$STUB_EMPTY" ] && exit 0\n  mkdir -p "$4/relay" && cp -r "%s" "$4/relay/deploy"\n  printf "#!/bin/sh\necho \\"\$*\\" >>%s/update.log\n" >"$4/relay/deploy/hidway-update"\n  exit 0\nfi\n[ "$3" = remote ] || [ "$1" = remote ] && echo https://example.invalid/hidway.git\nexit 0\n' \
+        "$DEPLOY" "$work" >"$work/bin/git"
+    chmod +x "$work/bin/"*
+    : >"$work/update.log"
+    rm -rf "$work/alone" "$work/normal"
+    mkdir -p "$work/alone" "$work/normal"
+    cp "$DEPLOY/install.sh" "$work/alone/install.sh"
+    cp -r "$DEPLOY/." "$work/normal/"
+    printf '#!/bin/sh\necho "$*" >>%s/update.log\n' "$work" >"$work/normal/hidway-update"
+}
+run_full() { # run_full <script> <args...>
+    local script=$1
+    shift
+    PATH=$work/bin:$PATH HIDWAY_ROOT=$R HIDWAY_BUILD_USER= HIDWAY_SYSTEMCTL=$work/bin/systemctl \
+        HIDWAY_UDEVADM=$work/bin/udevadm HIDWAY_TAILSCALE=$work/bin/tailscale HIDWAY_MODEL_FILE=$work/model \
+        bash "$script" "$@" >"$work/out" 2>&1
+}
+ARGS=(--repo https://example.invalid/hidway.git --ref main --bind 100.64.1.2 --allow-add 100.64.9.9 --uart usb)
+
+full_setup
+check "alone: fresh install succeeds" run_full "$work/alone/install.sh" "${ARGS[@]}" --serial-default /dev/ttyUSB0
+check "  configuration from the checkout" out_has "relay files of the checkout"
+check "  serial default used on a first install" test "$(conf HIDWAY_SERIAL)" = /dev/ttyUSB0
+check "  sender added" test "$(conf HIDWAY_ALLOW)" = 100.64.9.9
+check "  update.conf has the ref" grep -q '^HIDWAY_REF=main$' "$R/etc/hidway/update.conf"
+check "  hidway-update ran from the checkout" grep -q -- '--now' "$work/update.log"
+check "  service files applied" grep -q -- '--apply-system' "$work/update.log"
+
+full_setup
+printf 'HIDWAY_BIND=100.64.1.2\nHIDWAY_ALLOW=100.64.7.7\nHIDWAY_SERIAL=/dev/hidway-serial\n' >"$R/etc/hidway/hidwayd.conf"
+check "alone: serial-default keeps an existing device" run_full "$work/alone/install.sh" "${ARGS[@]}" --serial-default /dev/ttyUSB0
+check "  serial unchanged" test "$(conf HIDWAY_SERIAL)" = /dev/hidway-serial
+check "  other sender kept, new one added" test "$(conf HIDWAY_ALLOW_EXTRA)" = 100.64.9.9
+
+full_setup
+printf 'HIDWAY_BIND=100.64.1.2\nHIDWAY_ALLOW=100.64.7.7\nHIDWAY_SERIAL=/dev/hidway-serial\n' >"$R/etc/hidway/hidwayd.conf"
+check "alone: --serial still forces the device" run_full "$work/alone/install.sh" "${ARGS[@]}" --serial /dev/ttyUSB1
+check "  serial changed" test "$(conf HIDWAY_SERIAL)" = /dev/ttyUSB1
+
+full_setup
+export STUB_EMPTY=1
+check "alone: checkout without relay files fails, fresh root" not run_full "$work/alone/install.sh" "${ARGS[@]}"
+check "  ...with a clear message" out_has "neither next to install.sh nor in the checkout"
+check "  no configuration written" not test -e "$R/etc/hidway/hidwayd.conf"
+printf 'HIDWAY_BIND=100.64.1.2\nHIDWAY_ALLOW=100.64.7.7\nHIDWAY_SERIAL=/dev/hidway-serial\n' >"$R/etc/hidway/hidwayd.conf"
+cp "$R/etc/hidway/hidwayd.conf" "$work/before"
+check "alone: same with an existing config" not run_full "$work/alone/install.sh" "${ARGS[@]}" --serial /dev/ttyUSB1
+check "  existing config untouched" cmp -s "$work/before" "$R/etc/hidway/hidwayd.conf"
+check "  no backup taken" not exists "$R/var/backups/hidway/*/etc/hidway/*"
+unset STUB_EMPTY
+
+full_setup
+check "normal checkout: install succeeds" run_full "$work/normal/install.sh" "${ARGS[@]}"
+check "  uses its own files, as before" not out_has "relay files of the checkout"
+check "  default serial from the example" test "$(conf HIDWAY_SERIAL)" = /dev/hidway-serial
+check "  hidway-update ran from the checkout layout" grep -q -- '--now' "$work/update.log"
+
 echo "install.sh: $pass passed, $fail failed"
 ((fail == 0))

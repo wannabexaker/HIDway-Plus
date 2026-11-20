@@ -1,10 +1,13 @@
-﻿param([string]$PiHost,[string]$PiUser,[string]$RelayIP,[string]$SenderIP,[ValidateSet('gpio','usb')][string]$Uart='usb',[string]$Serial='/dev/ttyUSB0',[string]$ResultFile)
+﻿param([string]$PiHost,[string]$PiUser,[string]$RelayIP,[string]$SenderIP,[ValidateSet('gpio','usb')][string]$Uart='usb',[string]$Serial='/dev/ttyUSB0',[string]$SerialDefault,[string]$ResultFile)
 . (Join-Path $PSScriptRoot 'hidway-setup-core.ps1')
 $rc=1
 try {
     $target=Get-HidwaySshTarget $PiHost $PiUser
     if (-not (Test-HidwayIPv4 $SenderIP) -or -not (Test-HidwayIPv4 $RelayIP)) { throw 'Enter both Pi relay and sending Windows PC IPv4.' }
-    if ($Serial -notmatch '^/dev/[a-zA-Z0-9_./-]+$' -or $Serial.Contains('..')) { throw 'Invalid serial device.' }
+    # -SerialDefault: only used by the relay when it has no configuration yet. -Serial forces the device.
+    $serialOption=if($SerialDefault){'--serial-default '+$SerialDefault}else{'--serial '+$Serial}
+    foreach ($device in @($Serial,$SerialDefault)) { if ($device -and ($device -notmatch '^/dev/[a-zA-Z0-9_./-]+\z' -or $device.Contains('..'))) { throw 'Invalid serial device.' } }
+    if ($SerialDefault -and $PSBoundParameters.ContainsKey('Serial')) { throw 'Use either -Serial or -SerialDefault.' }
     $ssh=Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe';$scp=Join-Path $env:WINDIR 'System32\OpenSSH\scp.exe'
     if (-not (Test-Path -LiteralPath $ssh) -or -not (Test-Path -LiteralPath $scp)) { throw 'Enable Windows Settings > Optional features > OpenSSH Client, then retry.' }
     $installer=Join-Path $PSScriptRoot 'relay-install.sh'
@@ -17,7 +20,7 @@ try {
     & $scp -o StrictHostKeyChecking=yes -- $installer "${target}:$remote/install.sh"
     if ($LASTEXITCODE -ne 0) { throw 'Could not transfer the relay installer.' }
     Write-Host 'Installing/updating the relay from the public main branch. Configuration is backed up; this sender is added without removing the other PC.' -ForegroundColor Yellow
-    & $ssh -t -o StrictHostKeyChecking=yes -- $target "sudo bash $remote/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind $RelayIP --allow-add $SenderIP --uart $Uart --serial $Serial"
+    & $ssh -t -o StrictHostKeyChecking=yes -- $target "sudo bash $remote/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind $RelayIP --allow-add $SenderIP --uart $Uart $serialOption"+'; hidway_rc=$?; rm -rf -- '+$remote+'; exit $hidway_rc'
     if ($LASTEXITCODE -ne 0) { throw 'Relay installation failed. Read the message above; existing relay backups remain on the Pi.' }
     & $ssh -t -o StrictHostKeyChecking=yes -- $target 'systemctl is-active hidwayd; systemctl --no-pager status hidwayd'
     if ($LASTEXITCODE -ne 0) { throw 'Relay was installed but its service is not healthy. Check serial wiring/device and the service status above.' }

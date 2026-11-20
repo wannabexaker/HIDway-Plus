@@ -88,4 +88,62 @@ Check (-not(Test-Path (Join-Path $install 'hidway-client.exe')) -and -not(Test-P
 Check ([IO.File]::ReadAllText((Join-Path $install 'hidway.ini')) -eq 'retain user settings') 'uninstall retains settings'
 Check ([IO.File]::ReadAllText((Join-Path $install 'hidway-input-monitor.ini')) -eq 'retain labels') 'uninstall retains labels'
 Check ([IO.File]::ReadAllText((Join-Path $install 'user-recording.hidrec')) -eq 'retain recording') 'uninstall retains recordings'
+# Input hardening: a trailing newline must not slip past '$' anchors.
+Reject {Get-HidwaySshTarget "raspberrypi.local`n" 'pi'} 'SSH host trailing newline refused'
+Reject {Get-HidwaySshTarget 'raspberrypi.local' "pi`n"} 'SSH user trailing newline refused'
+Check (-not (Test-HidwayIPv4 "192.0.2.20`n")) 'IPv4 trailing newline refused'
+foreach($name in @('hidway-setup-gui.ps1','hidway-pi-setup.ps1')){
+    $text=[IO.File]::ReadAllText((Join-Path $PSScriptRoot "..\tools\setup\$name"))
+    Check ($text.Contains('[a-zA-Z0-9_./-]+\z') -and -not $text.Contains('[a-zA-Z0-9_./-]+$''')) "serial check anchors with \z in $name"
+}
+$piText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\tools\setup\hidway-pi-setup.ps1'))
+Check ($piText.Contains('--serial-default') -and $piText.Contains('rm -rf -- ')) 'Pi setup passes --serial-default and removes its remote cache directory'
+# OneDrive is refused with a clear notice; real junctions keep their own message; short paths say what is required.
+$savedOneDrive=$env:OneDrive;$fakeOneDrive=Join-Path $base 'OneDriveFake';$env:OneDrive=$fakeOneDrive
+try{
+    $message='';try{$null=Assert-HidwayInstallPath (Join-Path $fakeOneDrive 'Tools\HIDway')}catch{$message=$_.Exception.Message}
+    Check ($message -match 'OneDrive' -and $message -match 'outside OneDrive') 'OneDrive install folder refused with a clear message'
+    Check ((Get-HidwayOneDriveProblem (Join-Path $fakeOneDrive 'Download')) -match 'OneDrive') 'OneDrive package folder detected'
+}finally{$env:OneDrive=$savedOneDrive}
+Check ((Get-HidwayOneDriveProblem $install) -eq '') 'normal folder is not reported as OneDrive'
+$junction=Join-Path $base 'junction-link'
+New-Item -ItemType Junction -Path $junction -Target $install | Out-Null
+try{
+    $message='';try{$null=Assert-HidwayInstallPath (Join-Path $junction 'sub')}catch{$message=$_.Exception.Message}
+    Check ($message -match 'junction or symbolic link' -and $message -notmatch 'OneDrive') 'real junction keeps its own message'
+}finally{[IO.Directory]::Delete($junction)}
+Check (Test-Path (Join-Path $install 'hidway.ini')) 'junction removal left the target intact'
+$message='';try{$null=Assert-HidwayInstallPath 'D:\HID'}catch{$message=$_.Exception.Message}
+Check ($message -match 'at least 8 characters' -and $message -notmatch 'drive root') 'short path says what is required'
+$message='';try{$null=Assert-HidwayInstallPath 'D:\'}catch{$message=$_.Exception.Message}
+Check ($message -match 'drive root') 'drive root still named as such'
+# Wizard started from the installed folder: only the registered folder it runs from counts.
+Check (Test-HidwayInstalledHere $source $source $source) 'installed folder recognised'
+Check (-not (Test-HidwayInstalledHere $source $source '')) 'unregistered folder is not "installed here"'
+Check (-not (Test-HidwayInstalledHere $source $install $source)) 'a different folder is not "installed here"'
+Check (-not (Test-HidwayInstalledHere (Join-Path $base 'nowhere') (Join-Path $base 'nowhere') (Join-Path $base 'nowhere'))) 'folder without tools is not "installed here"'
+Check (-not (Test-HidwayInstalledHere '' $source $source)) 'empty folder text is handled'
+# Serial defaults, BOOTSEL detection, Tailscale lookup, file association.
+Check ((Get-HidwayDefaultSerial 'usb') -eq '/dev/ttyUSB0' -and (Get-HidwayDefaultSerial 'gpio') -eq '/dev/hidway-serial') 'serial default per UART choice'
+$d1=Join-Path $base 'drive1';$d2=Join-Path $base 'drive2';New-Item -ItemType Directory -Path $d1,$d2 | Out-Null
+[IO.File]::WriteAllText((Join-Path $d1 'INFO_UF2.TXT'),'Board-ID: RP2040')
+Check ((@(Get-HidwayBootselDrives @($d1,$d2)).Count -eq 1) -and (@(Get-HidwayBootselDrives @($d1,$d2))[0] -eq $d1) -and (@(Get-HidwayBootselDrives @($d2)).Count -eq 0)) 'BOOTSEL drive detection by INFO_UF2.TXT'
+$fakeTs=Join-Path $base 'fake-tailscale.cmd';[IO.File]::WriteAllText($fakeTs,"@echo off`r`necho 100.64.1.5`r`n")
+Check ((Get-HidwayTailscaleIPv4 $fakeTs) -eq '100.64.1.5') 'Tailscale address read from the local CLI'
+Check ((Get-HidwayTailscaleIPv4 (Join-Path $base 'missing.exe')) -eq '') 'missing Tailscale is silent'
+[IO.File]::WriteAllText($fakeTs,"@echo off`r`necho not-an-address`r`n")
+Check ((Get-HidwayTailscaleIPv4 $fakeTs) -eq '') 'garbage Tailscale output is ignored'
+Check (-not (Test-HidwayFileAssociation '.hidwaynoassociation')) 'unassociated extension detected'
+# Sunshine: existing settings survive, the backup holds the original, nothing is truncated.
+$sun=Join-Path $base 'sunshine.conf';$original="sunshine_name = Gaming`r`nkeyboard = enabled`r`nmouse=enabled`r`nport = 47989`r`n"
+[IO.File]::WriteAllText($sun,$original)
+Set-HidwaySunshineInputOff $sun
+$after=[IO.File]::ReadAllText($sun)
+Check ($after.Contains('sunshine_name = Gaming') -and $after.Contains('port = 47989') -and $after.Contains('keyboard = disabled') -and $after.Contains('mouse = disabled') -and $after.Contains('controller = disabled') -and $after -notmatch 'enabled') 'Sunshine keeps unrelated lines and disables input'
+$backups=@(Get-ChildItem -LiteralPath $base -Filter 'sunshine.conf.bak-*')
+Check ($backups.Count -eq 1 -and [IO.File]::ReadAllText($backups[0].FullName) -eq $original) 'Sunshine backup is the original file'
+Set-HidwaySunshineInputOff $sun
+Check (([regex]::Matches([IO.File]::ReadAllText($sun),'keyboard = disabled')).Count -eq 1) 'Sunshine edit is idempotent'
+$sunNew=Join-Path $base 'sun-new\config\sunshine.conf';Set-HidwaySunshineInputOff $sunNew
+Check ((Test-Path $sunNew) -and -not (Test-Path ($sunNew+'.bak-*')) -and [IO.File]::ReadAllText($sunNew).Contains('mouse = disabled')) 'Sunshine without a config creates one'
 Write-Output "Setup: $script:checks checks PASS (isolated files/shortcuts/test registry key; real installed apps, SSH and firmware unchanged)"

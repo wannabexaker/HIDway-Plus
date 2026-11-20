@@ -38,6 +38,14 @@ Options: `--ref main` to follow a branch instead of release tags (see
 different repository (by default the origin of the clone you run it from,
 converted to HTTPS).
 
+`--serial DEV` sets the serial device. `--serial-default DEV` sets it only on a
+first installation and leaves an existing `/etc/hidway/hidwayd.conf` with the
+device it already has; the Windows setup wizard uses this form unless a path
+was typed there. `install.sh` may also be run as a single copied file with
+`--repo`: it then takes `hidwayd.conf.example`, `update.conf.example` and
+`hidway-update` from the checkout it creates in `/opt/hidway/src`, and stops
+before changing `/etc/hidway` if they are missing.
+
 ## Status
 
 ```bash
@@ -156,6 +164,7 @@ journalctl -u hidwayd -u hidway-update -f
 |---|---|
 | `HIDWAY_BIND` | Tailscale address of the Pi; the relay listens on it only |
 | `HIDWAY_ALLOW` | Tailscale address of the remote PC; every other source is dropped |
+| `HIDWAY_ALLOW_EXTRA` | Optional further senders, comma-separated (for example the Gaming PC); eight addresses in total with `HIDWAY_ALLOW`. Written by `install.sh --allow-add` |
 | `HIDWAY_PORT` | UDP port (default 47800) |
 | `HIDWAY_SERIAL` | Serial device of the Pico link (default `/dev/hidway-serial`) |
 | `HIDWAY_BAUD` | Serial speed (default 921600) |
@@ -314,8 +323,9 @@ never removed.
 
 - `hidwayd` runs as `hidway` with no capabilities, a read-only file system,
   access to serial devices only, and a system-call filter. It binds to the
-  Tailscale address only, accepts a single peer, and caps input at 2000
-  packets per second.
+  Tailscale address only, accepts only the listed senders (at most eight; one
+  ARM session owns the relay at a time), and caps input at 2000 packets per
+  second.
 - Fetching, building and test runs happen as `hidway-build`, never as root.
   Root only copies the built binary into place and switches the symlink.
 - Whoever can push a release tag can change the relay binary on the Pi.
@@ -328,8 +338,12 @@ never removed.
 - The relay keeps running when the serial device disappears (probe unplugged,
   Pico reset), retries once per second, and starts every new connection with a
   RELEASE, so the Pico begins from "nothing held".
-- No queue: while the serial line is still sending, a newer state replaces the
-  pending one. A RELEASE discards anything pending and is always sent.
+- Bounded, ordered queue: while the serial line is still sending, key and
+  button changes wait in order (at most 32); a motion-only update with the same
+  held keys and buttons replaces the last waiting one. A state that waited
+  100 ms, or a full queue, is not delivered late: the relay sends RELEASE
+  instead and stays released until the next RELEASE or session. A RELEASE
+  discards anything waiting and is always sent first.
 - A clean stop (update, rollback, `systemctl stop`) sends a RELEASE first. A
   crash cannot, so the Pico also releases everything on its own 250 ms link
   timeout.

@@ -13,8 +13,9 @@ public static class HidwaySetupChrome {
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="HIDway Setup" Width="820" Height="720" MinWidth="700" MinHeight="620" Background="#1E1F22" Foreground="#ECEDEF" WindowStartupLocation="CenterScreen" FontFamily="Segoe UI" FontSize="14">
  <Window.Resources>
   <Style TargetType="ScrollBar"><Setter Property="Width" Value="12"/><Setter Property="Background" Value="#1E1F22"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar"><Track x:Name="PART_Track" IsDirectionReversed="True" Orientation="Vertical"><Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="#1E1F22"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton><Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType="Thumb"><Border Background="#44474D" CornerRadius="5" Margin="2"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb><Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="#1E1F22"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton></Track></ControlTemplate></Setter.Value></Setter></Style>
-  <Style TargetType="Button"><Setter Property="Background" Value="#303237"/><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="Padding" Value="16,9"/><Setter Property="Margin" Value="0,0,8,8"/><Setter Property="BorderBrush" Value="#44474D"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#3C3E44"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-  <Style TargetType="TextBox"><Setter Property="Background" Value="#2B2D32"/><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="BorderBrush" Value="#3E4147"/><Setter Property="Padding" Value="8"/><Setter Property="Margin" Value="0,5,0,12"/><Setter Property="CaretBrush" Value="White"/></Style>
+  <Style TargetType="Button"><Setter Property="Background" Value="#303237"/><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="Padding" Value="16,9"/><Setter Property="Margin" Value="0,0,8,8"/><Setter Property="BorderBrush" Value="#44474D"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#3C3E44"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="B" Property="BorderBrush" Value="#ECEDEF"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+  <Style TargetType="TextBox"><Setter Property="Background" Value="#2B2D32"/><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="BorderBrush" Value="#3E4147"/><Setter Property="Padding" Value="7,6"/><Setter Property="Margin" Value="0,0,0,8"/><Setter Property="CaretBrush" Value="White"/></Style>
+  <Style x:Key="Label" TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Margin" Value="0,4,0,3"/></Style>
   <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Margin" Value="0,0,0,12"/></Style>
   <Style TargetType="CheckBox"><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="Margin" Value="0,8,0,12"/></Style>
   <Style TargetType="RadioButton"><Setter Property="Foreground" Value="#ECEDEF"/><Setter Property="Margin" Value="0,8,20,12"/></Style>
@@ -28,13 +29,13 @@ public static class HidwaySetupChrome {
     <TextBlock Text="This wizard installs HIDway and Input Monitor together, then guides you through the Raspberry Pi relay and Pico firmware. You can install the Windows tools on both PCs and complete hardware setup on the PC connected to the Pico."/>
     <TextBlock Text="Windows input → HIDway → private network → Raspberry Pi relay → UART → Pico → USB HID → target PC" Foreground="#82E68C"/>
     <TextBlock Text="Before you begin: Windows 10/11 x64, a Raspberry Pi with Raspberry Pi OS and SSH enabled, the correct Pico board, and the documented UART wiring. Tailscale, Moonlight and Sunshine are separate optional applications."/>
-    <TextBox x:Name="License" IsReadOnly="True" Height="170" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
+    <TextBox x:Name="License" AutomationProperties.Name="Licence text" IsReadOnly="True" Height="170" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
     <CheckBox x:Name="Accept" Content="I accept the MIT license and want to continue."/>
    </StackPanel>
    <StackPanel x:Name="WindowsPage" Visibility="Collapsed">
     <TextBlock Text="Install on this Windows PC" FontSize="22"/>
     <TextBlock Text="HIDway and Input Monitor are always installed together. Existing HIDway settings, device labels and recordings are preserved. Close the installed apps before updating; this wizard will not terminate them."/>
-    <TextBlock Text="Installation folder"/><TextBox x:Name="Folder"/>
+    <TextBlock Text="Installation folder" Style="{StaticResource Label}"/><TextBox x:Name="Folder" AutomationProperties.Name="Installation folder"/>
     <WrapPanel><Button x:Name="Browse" Content="Choose folder…"/><CheckBox x:Name="Desktop" Content="Desktop shortcut"/></WrapPanel>
     <TextBlock Text="PC role (initializes a new configuration; existing settings are preserved):"/>
     <RadioButton x:Name="Player" GroupName="Role" Content="Remote PC — this laptop sends input to the Gaming PC" IsChecked="True"/>
@@ -43,21 +44,23 @@ public static class HidwaySetupChrome {
    </StackPanel>
    <StackPanel x:Name="NetworkPage" Visibility="Collapsed">
     <TextBlock Text="Connect the computers and Raspberry Pi" FontSize="22"/>
+    <CheckBox x:Name="SkipPi" Margin="0,0,0,10" Content="The relay is already configured, or I will set it up later (skips the Pi relay step)."/>
     <TextBlock Text="Put the sending PC and Pi on the same private LAN or Tailscale network. For remote display, use Moonlight/Sunshine or AnyDesk separately. HIDway does not transmit the screen."/>
     <WrapPanel><Button x:Name="Tailscale" Content="Tailscale download"/><Button x:Name="Moonlight" Content="Moonlight download"/><Button x:Name="Sunshine" Content="Sunshine download"/></WrapPanel>
-    <TextBlock Text="Pi SSH hostname or IPv4"/><TextBox x:Name="PiHost"/>
-    <TextBlock Text="Pi Linux username"/><TextBox x:Name="PiUser" Text="pi"/>
-    <TextBlock Text="Pi relay IPv4 (LAN/Tailscale address to use as HIDway Target)"/><TextBox x:Name="RelayIP"/>
-    <TextBlock x:Name="SenderLabel" Text="Remote PC IPv4 (the sender allowed by the relay)"/><TextBox x:Name="Sender"/>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Bottom"><TextBlock Text="Pi SSH hostname or IPv4" Style="{StaticResource Label}"/><TextBox x:Name="PiHost" AutomationProperties.Name="Pi SSH hostname or IPv4"/></StackPanel>
+     <StackPanel Grid.Row="0" Grid.Column="2" VerticalAlignment="Bottom"><TextBlock Text="Pi Linux username" Style="{StaticResource Label}"/><TextBox x:Name="PiUser" Text="pi" AutomationProperties.Name="Pi Linux username"/></StackPanel>
+     <StackPanel Grid.Row="1" Grid.Column="0" VerticalAlignment="Bottom"><TextBlock Text="Pi relay IPv4 (LAN/Tailscale address to use as HIDway Target)" Style="{StaticResource Label}"/><TextBox x:Name="RelayIP" AutomationProperties.Name="Pi relay IPv4"/></StackPanel>
+     <StackPanel Grid.Row="1" Grid.Column="2" VerticalAlignment="Bottom"><TextBlock x:Name="SenderLabel" Text="Remote PC IPv4 (the sender allowed by the relay)" Style="{StaticResource Label}"/><TextBox x:Name="Sender" AutomationProperties.Name="Sending PC IPv4"/></StackPanel>
+    </Grid>
     <TextBlock Text="The next step uses Windows OpenSSH in a visible terminal for fingerprint, password and sudo prompts. Authentication details are not stored. On first use, verify the fingerprint on your Pi before accepting it."/>
-    <CheckBox x:Name="SkipPi" Content="The relay is already configured, or I will set it up later."/>
    </StackPanel>
    <StackPanel x:Name="PiPage" Visibility="Collapsed">
     <TextBlock Text="Install the Raspberry Pi relay" FontSize="22"/>
     <TextBlock Text="Connect Pi UART TX/RX/GND to the Pico according to the wiring guide. Use the correct voltage and cross TX/RX. USB here means a USB-to-UART adapter on the Pi; the Pico HID USB goes to the target Windows PC."/>
     <WrapPanel><RadioButton x:Name="UartUsb" GroupName="Uart" Content="USB serial adapter" IsChecked="True"/><RadioButton x:Name="UartGpio" GroupName="Uart" Content="Pi GPIO UART"/></WrapPanel>
-    <TextBlock Text="Pi serial device path (Pi 4 GPIO UART3: /dev/ttyAMA3; USB adapter path varies)"/><TextBox x:Name="Serial" Text="/dev/ttyUSB0"/>
-    <TextBlock Text="Install uses the repository main branch. It sets the relay bind IPv4 and adds this sender while preserving Remote PC / Gaming PC peers already allowed (maximum eight). Configuration is backed up. The relay may restart. GPIO setup supports Pi 4/400/CM4; use a USB UART adapter on other models." Foreground="#D6A038"/>
+    <TextBlock Text="Pi serial device path (filled in for the choice above; Pi 4 GPIO UART3: /dev/hidway-serial)" Style="{StaticResource Label}"/><TextBox x:Name="Serial" Text="/dev/ttyUSB0" AutomationProperties.Name="Pi serial device path"/>
+    <TextBlock Text="Install uses the repository main branch. It sets the relay bind IPv4 and adds this sender while preserving Remote PC / Gaming PC peers already allowed (maximum eight). An existing relay keeps its serial device unless you type another path above. Configuration is backed up. The relay may restart. GPIO setup supports Pi 4/400/CM4; use a USB UART adapter on other models." Foreground="#D6A038"/>
     <WrapPanel><Button x:Name="Wiring" Content="Open wiring guide"/><Button x:Name="InstallPi" Content="Connect and install relay…"/></WrapPanel>
     <TextBlock x:Name="PiStatus" Text="No relay installation has run in this wizard."/>
    </StackPanel>
@@ -65,8 +68,8 @@ public static class HidwaySetupChrome {
     <TextBlock Text="Install Pico firmware" FontSize="22"/>
     <TextBlock Text="Select the exact name printed on the board. Unplug only its USB, hold BOOTSEL while reconnecting it to this PC, then release when the BOOTSEL drive appears. Existing HID input will be interrupted while flashing."/>
     <WrapPanel><RadioButton x:Name="Pico" GroupName="Board" Content="Pico"/><RadioButton x:Name="PicoW" GroupName="Board" Content="Pico W"/><RadioButton x:Name="Pico2" GroupName="Board" Content="Pico 2"/><RadioButton x:Name="Pico2W" GroupName="Board" Content="Pico 2 W"/></WrapPanel>
-    <TextBlock Text="BOOTSEL drive (example: E:\) — only a matching RP2040/RP2350 drive is accepted"/><TextBox x:Name="Drive"/>
-    <Button x:Name="Flash" Content="Verify drive and copy firmware…" HorizontalAlignment="Left"/>
+    <TextBlock Style="{StaticResource Label}" Text="BOOTSEL drive (example: E:\) — only a matching RP2040/RP2350 drive is accepted"/><TextBox x:Name="Drive" AutomationProperties.Name="BOOTSEL drive"/>
+    <WrapPanel><Button x:Name="Detect" Content="Detect BOOTSEL drive"/><Button x:Name="Flash" Content="Verify drive and copy firmware…"/></WrapPanel>
     <TextBlock x:Name="FlashStatus" Text="The drive disappears when the Pico reboots. A successful copy still needs a real HID input test."/>
     <CheckBox x:Name="SkipPico" Content="Pico is already flashed, connected to the other PC, or I will complete this later."/>
    </StackPanel>
@@ -106,17 +109,61 @@ if($existingFolder){
     if((Test-Path -LiteralPath $existingIni) -and [IO.File]::ReadAllText($existingIni) -match '(?m)^loopback_mode\s*=\s*1\s*$'){$ui.Gaming.IsChecked=$true}
 }
 $ui.License.Text=if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LICENSE')){[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'LICENSE'))}else{'MIT License — see LICENSE in the extracted release package.'}
-$script:step=0;$script:installed='';$script:firstInstall=$false;$script:piOK=$false;$script:flashed=$false;$script:piProcess=$null;$script:result=''
+$script:step=0;$script:installed='';$script:firstInstall=$false;$script:piOK=$false;$script:flashed=$false;$script:piProcess=$null;$script:result='';$script:serialTyped=$false;$script:serialFilling=$false;$script:tailscaleTried=$false;$script:packageProblem=''
+try{$script:packageProblem=Get-HidwayOneDriveProblem $PSScriptRoot}catch{}
 $pages=@('Welcome','WindowsPage','NetworkPage','PiPage','PicoPage','FinishPage')
+$brushes=@{};foreach($k in @(@('error','#FF7B72'),@('success','#82E68C'),@('note','#D6A038'))){$brushes[$k[0]]=New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color][Windows.Media.ColorConverter]::ConvertFromString($k[1]))}
+function Set-Status([string]$Text,[string]$Kind='note') { $ui.Status.Text=$Text;$ui.Status.Foreground=$brushes[$Kind] }
+function Test-InstalledHere { Test-HidwayInstalledHere $ui.Folder.Text $PSScriptRoot (Get-HidwayInstallationFolder) }
+function Update-NextLabel {
+    $label='Next'
+    if($script:step -eq 1){$label='Install and Next';try{if(Test-InstalledHere){$label='Next'}elseif(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway-client.exe')){$label='Update and Next'}}catch{}}
+    elseif($script:step -eq 5){$label='Finish'}
+    $ui.Next.Content=$label
+}
+function Update-Status {
+    # The message that is known without clicking anything: OneDrive package, unusable folder, tools already here.
+    if($script:packageProblem){Set-Status $script:packageProblem 'error';return}
+    if($script:step -eq 1 -and $ui.Folder.Text.Trim()){
+        $problem='';try{$null=Assert-HidwayInstallPath $ui.Folder.Text}catch{$problem=$_.Exception.Message}
+        if($problem){Set-Status $problem 'error';return}
+        if(Test-InstalledHere){Set-Status 'HIDway and Input Monitor are already installed in this folder. Next continues with the Pi relay and Pico steps without installing again.' 'note';return}
+    }
+    Set-Status ''
+}
+function Find-BootselDrive([switch]$Auto) {
+    $found=@();try{$found=@(Get-HidwayBootselDrives)}catch{}
+    if($found.Count -eq 1){
+        if(-not $ui.Drive.Text.Trim()){$ui.Drive.Text=$found[0];$ui.FlashStatus.Text="Found a BOOTSEL drive: $($found[0]) (filled in above). Choose the board model, then copy the firmware."}
+        else{$ui.FlashStatus.Text="Found a BOOTSEL drive: $($found[0]). The drive box already has text, so it was not changed."}
+    }elseif($found.Count -gt 1){$ui.FlashStatus.Text="Several BOOTSEL drives found: $($found -join ', '). Type the one that belongs to this Pico."}
+    elseif(-not $Auto){$ui.FlashStatus.Text='No BOOTSEL drive found. Unplug the Pico, hold BOOTSEL while reconnecting it, then press Detect again.'}
+}
+function Set-SerialDefault {
+    if($script:serialTyped -and $ui.Serial.Text.Trim()){return}
+    $script:serialFilling=$true
+    try{$ui.Serial.Text=Get-HidwayDefaultSerial $(if($ui.UartGpio.IsChecked){'gpio'}else{'usb'})}finally{$script:serialFilling=$false}
+    $script:serialTyped=$false
+}
+function Open-Document([string]$Path) {
+    if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){throw "Not found in this folder: $Path"}
+    if(Test-HidwayFileAssociation ([IO.Path]::GetExtension($Path))){Start-Process -FilePath $Path}
+    else{Start-Process -FilePath (Join-Path $env:WINDIR 'System32\notepad.exe') -ArgumentList ('"'+$Path+'"')}
+}
 function Show-Page {
     for($i=0;$i -lt $pages.Count;$i++){$ui[$pages[$i]].Visibility=if($i -eq $script:step){'Visible'}else{'Collapsed'}}
     $ui.Steps.Text="Step $($script:step+1) of 6  •  License → Windows → Network → Pi relay → Pico → Test"
     $ui.Back.IsEnabled=$script:step -gt 0 -and -not $script:piProcess
-    $ui.Next.Content=if($script:step -eq 1){if(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway-client.exe')){'Update and Next'}else{'Install and Next'}}elseif($script:step -eq 5){'Finish'}else{'Next'}
-    $ui.Status.Text=''
+    Update-NextLabel
+    Update-Status
     $ui.SenderLabel.Text=if($ui.Gaming.IsChecked){'Gaming PC IPv4 (this PC sends virtual input through the relay)'}else{'Remote PC IPv4 (sending laptop / PC allowed by the relay)'}
+    if($script:step -eq 2 -and -not $script:tailscaleTried -and -not $ValidateOnly){ # renders/validation never start another program
+        $script:tailscaleTried=$true
+        if(-not $ui.Sender.Text.Trim()){$ip=Get-HidwayTailscaleIPv4 (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe');if($ip){$ui.Sender.Text=$ip}}
+    }
+    if($script:step -eq 4){Find-BootselDrive -Auto}
 }
-function Invoke-UiAction([scriptblock]$Action) { try { & $Action } catch { $ui.Status.Text=$_.Exception.Message } }
+function Invoke-UiAction([scriptblock]$Action) { try { & $Action } catch { Set-Status $_.Exception.Message 'error' } }
 function Open-Installed([string]$Name) {
     if(-not $script:installed){throw 'Complete Windows installation first.'}
     $processName=[IO.Path]::GetFileNameWithoutExtension($Name)
@@ -131,12 +178,18 @@ $ui.Updates.Add_Click({Invoke-UiAction {
     Start-Process -FilePath $launcher -ArgumentList '--updates' -WorkingDirectory (Split-Path $launcher)
     $window.Close()
 }})
-$ui.Back.Add_Click({if($script:step -gt 0){$script:step--;Show-Page}})
+$ui.Back.Add_Click({if($script:step -gt 0){$script:step--;if($script:step -eq 3 -and $ui.SkipPi.IsChecked){$script:step--};Show-Page}})
 $ui.Next.Add_Click({Invoke-UiAction {
     if($script:piProcess){throw 'Finish the SSH installation terminal first.'}
     switch($script:step){
         0 {if(-not $ui.Accept.IsChecked){throw 'Accept the license to continue.'}}
-        1 {$script:firstInstall=-not(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway.ini'));$script:installed=Install-HidwayPackage $PSScriptRoot $ui.Folder.Text -Desktop:([bool]$ui.Desktop.IsChecked)}
+        1 {
+            if(Test-InstalledHere){$script:installed=Get-HidwayInstallationFolder} # started from the installed folder: nothing to install
+            else{
+                if(-not $script:firstInstall){$script:firstInstall=-not(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway.ini'))} # stays true on Back/Next
+                $script:installed=Install-HidwayPackage $PSScriptRoot $ui.Folder.Text -Desktop:([bool]$ui.Desktop.IsChecked)
+            }
+        }
         2 {if(-not $ui.SkipPi.IsChecked){$null=Get-HidwaySshTarget $ui.PiHost.Text $ui.PiUser.Text;if(-not(Test-HidwayIPv4 $ui.Sender.Text) -or -not(Test-HidwayIPv4 $ui.RelayIP.Text)){throw 'Enter both the Pi relay and sending Windows PC IPv4.'}}}
         3 {if(-not $ui.SkipPi.IsChecked -and -not $script:piOK){throw 'Complete relay installation, or go Back and choose setup later.'}}
         4 {
@@ -147,39 +200,43 @@ $ui.Next.Add_Click({Invoke-UiAction {
         }
         5 {$window.Close();return}
     }
-    $script:step++;$ui.Summary.Text="Installed: $script:installed`nPi relay: $(if($script:piOK){'service active'}else{'not verified in this wizard'})`nPico: $(if($script:flashed){'firmware copied; real input test required'}else{'not flashed in this wizard'})`nRoute to select: $(if($ui.Gaming.IsChecked){'Gaming PC'}else{'Remote PC'})"
+    $script:step++;if($script:step -eq 3 -and $ui.SkipPi.IsChecked){$script:step++};$ui.Summary.Text="Installed: $script:installed`nPi relay: $(if($script:piOK){'service active'}else{'not verified in this wizard'})`nPico: $(if($script:flashed){'firmware copied; real input test required'}else{'not flashed in this wizard'})`nRoute to select: $(if($ui.Gaming.IsChecked){'Gaming PC'}else{'Remote PC'})"
     Show-Page
 }})
 $ui.InstallPi.Add_Click({Invoke-UiAction {
     if($script:piProcess){throw 'A relay installer is already open.'}
     $null=Get-HidwaySshTarget $ui.PiHost.Text $ui.PiUser.Text
     if(-not(Test-HidwayIPv4 $ui.Sender.Text) -or -not(Test-HidwayIPv4 $ui.RelayIP.Text)){throw 'Enter the Pi relay and sending PC IPv4 on the Network step.'}
-    if($ui.Serial.Text -notmatch '^/dev/[a-zA-Z0-9_./-]+$' -or $ui.Serial.Text.Contains('..')){throw 'Enter a valid Pi serial device.'}
+    if($ui.Serial.Text -notmatch '^/dev/[a-zA-Z0-9_./-]+\z' -or $ui.Serial.Text.Contains('..')){throw 'Enter a valid Pi serial device.'}
     $logs=Join-Path $env:LOCALAPPDATA 'HIDway\Setup';New-Item -ItemType Directory -Path $logs -Force | Out-Null
     $script:result=Join-Path $logs ('pi-'+[guid]::NewGuid().ToString('N')+'.result')
     $uart=if($ui.UartGpio.IsChecked){'gpio'}else{'usb'}
     $ps=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $PSScriptRoot 'hidway-pi-setup.ps1')+'" -PiHost '+$ui.PiHost.Text+' -PiUser '+$ui.PiUser.Text+' -RelayIP '+$ui.RelayIP.Text+' -SenderIP '+$ui.Sender.Text+' -Uart '+$uart+' -Serial '+$ui.Serial.Text+' -ResultFile "'+$script:result+'"'
+    $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $PSScriptRoot 'hidway-pi-setup.ps1')+'" -PiHost '+$ui.PiHost.Text+' -PiUser '+$ui.PiUser.Text+' -RelayIP '+$ui.RelayIP.Text+' -SenderIP '+$ui.Sender.Text+' -Uart '+$uart+$(if($script:serialTyped){' -Serial '}else{' -SerialDefault '})+$ui.Serial.Text+' -ResultFile "'+$script:result+'"'
     $script:piProcess=Start-Process -FilePath $ps -ArgumentList $arguments -WindowStyle Normal -PassThru
     $ui.PiStatus.Text='Complete SSH fingerprint verification, Linux login and sudo in the visible terminal. Read any errors before closing it.'
     $ui.InstallPi.IsEnabled=$false;$ui.Back.IsEnabled=$false;$ui.Next.IsEnabled=$false
 }})
 $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromMilliseconds(500)
-$timer.Add_Tick({if($script:piProcess -and $script:piProcess.HasExited){$script:piOK=(Test-Path -LiteralPath $script:result) -and [IO.File]::ReadAllText($script:result).Trim() -eq '0';$script:piProcess.Dispose();$script:piProcess=$null;$ui.InstallPi.IsEnabled=$true;$ui.Back.IsEnabled=$true;$ui.Next.IsEnabled=$true;$ui.PiStatus.Text=if($script:piOK){'Relay service is active. Continue to Pico.'}else{'Relay setup did not finish successfully. Retry after correcting the terminal error.'}}})
+$timer.Add_Tick({if($script:piProcess -and $script:piProcess.HasExited){$script:piOK=(Test-Path -LiteralPath $script:result) -and [IO.File]::ReadAllText($script:result).Trim() -eq '0';$script:piProcess.Dispose();$script:piProcess=$null;$ui.InstallPi.IsEnabled=$true;$ui.Back.IsEnabled=$true;$ui.Next.IsEnabled=$true;$ui.PiStatus.Text=if($script:piOK){'Relay service is active. Continue to Pico.'}else{'Relay setup did not finish successfully. Retry after correcting the terminal error.'};if($script:piOK){Set-Status 'Relay service is active.' 'success'}else{Set-Status 'Relay setup did not finish successfully.' 'error'}}})
 $ui.Flash.Add_Click({Invoke-UiAction {
     $board=if($ui.Pico.IsChecked){'pico'}elseif($ui.PicoW.IsChecked){'pico_w'}elseif($ui.Pico2.IsChecked){'pico2'}elseif($ui.Pico2W.IsChecked){'pico2_w'}else{throw 'Choose the exact Pico model first.'}
     $null=Get-HidwayPayload $PSScriptRoot
     $file=Get-HidwayPicoFile $PSScriptRoot $board $ui.Drive.Text
     if([Windows.MessageBox]::Show("Copy $board firmware to $($ui.Drive.Text)? The Pico HID connection will restart.",'Flash Pico','OKCancel','Question') -ne 'OK'){return}
     Copy-Item -LiteralPath $file -Destination (Join-Path $ui.Drive.Text ([IO.Path]::GetFileName($file))) -ErrorAction Stop
-    $script:flashed=$true;$ui.FlashStatus.Text='Firmware copy completed. Wait for the Pico to reboot, then confirm both keyboard and mouse in Input Monitor.'
+    $script:flashed=$true;Set-Status 'Firmware copy completed.' 'success';$ui.FlashStatus.Text='Firmware copy completed. Wait for the Pico to reboot, then confirm both keyboard and mouse in Input Monitor.'
 }})
 foreach($entry in @(@('Tailscale','https://tailscale.com/download/windows'),@('Moonlight','https://moonlight-stream.org/'),@('Sunshine','https://docs.lizardbyte.dev/projects/sunshine/latest/'))){$url=$entry[1];$ui[$entry[0]].Add_Click({Start-Process $url}.GetNewClosure())}
-$ui.Wiring.Add_Click({Invoke-UiAction {Start-Process (Join-Path $PSScriptRoot 'docs\RELAY.md')}})
-$ui.Guide.Add_Click({Invoke-UiAction {Start-Process (Join-Path $PSScriptRoot 'docs\INSTALLATION.md')}})
+$ui.Wiring.Add_Click({Invoke-UiAction {Open-Document (Join-Path $PSScriptRoot 'docs\RELAY.md')}})
+$ui.Detect.Add_Click({Invoke-UiAction {Find-BootselDrive}})
+$ui.Serial.Add_TextChanged({if(-not $script:serialFilling){$script:serialTyped=$true}})
+$ui.UartUsb.Add_Checked({Set-SerialDefault});$ui.UartGpio.Add_Checked({Set-SerialDefault})
+$ui.Folder.Add_TextChanged({try{Update-NextLabel;if($script:step -eq 1){Update-Status}}catch{}})
+$ui.Guide.Add_Click({Invoke-UiAction {Open-Document (Join-Path $PSScriptRoot 'docs\INSTALLATION.md')}})
 $ui.Launch.Add_Click({Invoke-UiAction {Open-Installed 'hidway-client.exe'}})
 $ui.Monitor.Add_Click({Invoke-UiAction {Open-Installed 'hidway-input-monitor.exe'}})
-$window.Add_Closing({param($sender,$event)if($script:piProcess){$event.Cancel=$true;$ui.Status.Text='Finish/close the SSH terminal before closing this wizard.'}})
+$window.Add_Closing({param($sender,$event)if($script:piProcess){$event.Cancel=$true;Set-Status 'Finish/close the SSH terminal before closing this wizard.' 'note'}})
 Show-Page
 if($SmokeTest){
     $window.ShowActivated=$false;$window.Show();$window.UpdateLayout()

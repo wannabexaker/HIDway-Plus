@@ -11,6 +11,8 @@
 #   --uart gpio|usb      gpio: Pico wired to the Pi 4's GPIO UART3 (enabled
 #                        now and kept after reboots); usb: Debug Probe/adapter
 #   --serial DEV         serial device, if not /dev/hidway-serial
+#   --serial-default DEV like --serial, but only on a first install: an existing
+#                        /etc/hidway/hidwayd.conf keeps its serial device
 #   --wake-mac MAC       Wake-on-LAN: the target PC's MAC address
 #   --wake-to IP[:PORT]  Wake-on-LAN: where to send it (see docs/RELAY.md)
 #
@@ -56,6 +58,7 @@ CHANGED=0
 CONF_KV=() # KEY=value settings for hidwayd.conf, from the command line
 ALLOW_ADD=()
 UART=
+SERIAL_DEFAULT=
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install.sh: error: %s\n' "$*" >&2; exit 1; }
@@ -151,6 +154,10 @@ parse_setting() { # parse_setting <opt> <value>
     --serial)
         [[ $v =~ ^/dev/[A-Za-z0-9/._-]+$ ]] || die "--serial: not a device path: $v"
         CONF_KV+=("HIDWAY_SERIAL=$v")
+        ;;
+    --serial-default)
+        [[ $v =~ ^/dev/[A-Za-z0-9/._-]+$ ]] || die "--serial-default: not a device path: $v"
+        SERIAL_DEFAULT=$v
         ;;
     --uart)
         [[ $v == gpio || $v == usb ]] || die "--uart: gpio or usb, not: $v"
@@ -281,8 +288,9 @@ origin_url() {
 configured() { ! grep -v '^[[:space:]]*#' "$ETC/hidwayd.conf" | grep -q '<'; }
 
 full_install() {
-    local here
+    local here deploy f
     here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    deploy=$here
 
     local missing=() c
     for c in git make cc; do
@@ -317,14 +325,29 @@ full_install() {
         as_build git clone --quiet "$REPO" "$SRC"
     fi
 
+    # Copied alone to the Pi (the Windows wizard does this): the example configs
+    # and hidway-update come from the checkout instead. Checked before anything
+    # in /etc/hidway is touched.
+    if [[ ! -f $here/hidwayd.conf.example || ! -f $here/update.conf.example || ! -f $here/hidway-update ]]; then
+        deploy=$SRC/relay/deploy
+        for f in hidwayd.conf.example update.conf.example hidway-update; do
+            [[ -f $deploy/$f ]] || die "$f is neither next to install.sh nor in the checkout (${deploy#"$ROOT"}); nothing was changed in /etc/hidway"
+        done
+        say "using the relay files of the checkout: ${deploy#"$ROOT"}"
+    fi
+
+    if [[ -n $SERIAL_DEFAULT && ! -e $ETC/hidwayd.conf ]]; then
+        CONF_KV+=("HIDWAY_SERIAL=$SERIAL_DEFAULT")
+    fi
+
     say "configuration"
     if compgen -G "$ETC/*.conf" >/dev/null; then
         for f in "$ETC"/*.conf; do backup "$f"; done
     fi
     local overrides=("HIDWAY_REPO=$REPO")
     [[ $REF_SET == 1 ]] && overrides+=("HIDWAY_REF=$REF")
-    put_conf "$here/hidwayd.conf.example" "$ETC/hidwayd.conf" ${CONF_KV[@]+"${CONF_KV[@]}"}
-    put_conf "$here/update.conf.example" "$ETC/update.conf" "${overrides[@]}"
+    put_conf "$deploy/hidwayd.conf.example" "$ETC/hidwayd.conf" ${CONF_KV[@]+"${CONF_KV[@]}"}
+    put_conf "$deploy/update.conf.example" "$ETC/update.conf" "${overrides[@]}"
     if [[ $UART == gpio ]]; then
         enable_gpio_uart
     fi
@@ -332,11 +355,11 @@ full_install() {
     # Build the first release and install the service files of that same
     # commit, both through the updater, so everything comes from one source.
     say "building the relay"
-    HIDWAY_ROOT=$ROOT HIDWAY_BUILD_USER=$BUILD_USER bash "$here/hidway-update" --now ||
+    HIDWAY_ROOT=$ROOT HIDWAY_BUILD_USER=$BUILD_USER bash "$deploy/hidway-update" --now ||
         die "first build failed (see above). With no release tag yet, either tag one
        (git tag -a v0.1.0 -m 'HIDway 0.1.0' && git push origin v0.1.0) or install with --ref main"
     say "service files"
-    HIDWAY_ROOT=$ROOT HIDWAY_BUILD_USER=$BUILD_USER bash "$here/hidway-update" --apply-system
+    HIDWAY_ROOT=$ROOT HIDWAY_BUILD_USER=$BUILD_USER bash "$deploy/hidway-update" --apply-system
 
     "$SYSTEMCTL" enable --now hidway-update.timer
     prune_backups
@@ -366,7 +389,7 @@ main() {
         return
         ;;
     -h | --help)
-        sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
         return
         ;;
     esac
