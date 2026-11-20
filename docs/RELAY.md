@@ -1,7 +1,6 @@
 # Relay on the Raspberry Pi
 
-See [SECURITY.md](../SECURITY.md) for trust boundaries and defaults, and
-[VALIDATION.md](VALIDATION.md) for source and hardware validation boundaries.
+See [SECURITY.md](../SECURITY.md) for trust boundaries and defaults.
 
 `hidwayd` runs on the Raspberry Pi as a systemd service. Releases are deployed
 deliberately (by tagging), checked once a day, installed only when no session

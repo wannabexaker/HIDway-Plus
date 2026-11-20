@@ -43,7 +43,7 @@ click **Pico on this PC** beside ARM, and enable ARM when ready. The same preset
 is available inside Input options as **Use Pico on this PC**. Keep laptop HIDway
 closed for this route. Laptop Moonlight should use relative/game mouse mode;
 its **Optimize mouse for remote desktop instead of games** option should be off.
-The corrected setup was confirmed by the user; see [validation](VALIDATION.md).
+The corrected setup was confirmed by the user.
 
 Close HIDway and Input Monitor before switching versions, including old portable
 copies. A copy running from another folder is left untouched and prevents opening

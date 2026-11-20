@@ -65,7 +65,10 @@ aggregate-counts.tmp
 *.hidrec.csv.partial
 monitor-test-aliases.ini*
 
-# Private development notes and local setup photographs
+# Developer material stays local: docs/ holds only the user guides that ship
+# in the package; architecture, validation records, plans and test matrices
+# live in docs/dev/.
+/docs/dev/
 /CLAUDE.md
 /AGENTS.md
 /docs/CHECKLIST.md

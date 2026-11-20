@@ -29,6 +29,28 @@ are absent or an operation is busy. Errors stay in the window. Closing during
 a file transaction waits for it to finish. There are no automatic downloads,
 installs, process kills, Windows notification popups or scheduled retries.
 
+## Everything at once
+
+`tools/Update-All.cmd` in the source checkout updates a whole setup with one
+double-click: HIDway on this PC, HIDway on a second Windows PC over SSH, and
+the relay on the Raspberry Pi over SSH (`sudo hidway-update`). The Windows
+parts use the updater module described below, with the same checks and the
+same retained previous version; the module is copied to the second PC for the
+run and removed afterwards, so it also works on an installation whose own
+updater is older.
+
+Name the two hosts once in `tools/update-all.local.ini` (copy
+`update-all.example.ini`; the names are those of your own `~/.ssh/config`, and
+the file is not committed). `Update-All.cmd -CheckOnly` reports without
+downloading or installing.
+
+Nothing is closed, stopped or armed. A PC on which HIDway, the Monitor, Probe
+or Setup is running is skipped and named, and the relay installs a new release
+only after a live session has ended. A preview build is replaced only with
+`-AllowPreview`. The Pico firmware is never flashed from here: that needs the
+BOOTSEL button and the setup wizard's Pico step, and only when the release
+notes say the firmware changed.
+
 ## Fixed source and package contract
 
 `tools/setup/hidway-updater.psm1` is a standalone PowerShell 5.1 module.

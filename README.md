@@ -155,6 +155,9 @@ start HIDway as administrator yourself; it never elevates on its own.
   recordings are kept. Nothing is downloaded or installed automatically.
 - The Raspberry Pi relay follows the same tags with its own nightly check and
   rollback (`hidway-status`, `sudo hidway-update`).
+- With two PCs and a Pi, `tools/Update-All.cmd` updates all three with one
+  double-click (the second PC and the Pi over SSH). It skips a PC on which
+  HIDway is open and never flashes the Pico.
 - The updater replaces the installation folder as a whole. Close HIDway, the
   Monitor and any terminal or editor opened in that folder first.
 
@@ -201,10 +204,7 @@ Local builds, packages and working files belong in the ignored `.scratch/` and
 | Windows updates, release contract, versioning | [UPDATES](docs/UPDATES.md) |
 | Input sources, routes and their limits | [INPUT_SOURCES](docs/INPUT_SOURCES.md) |
 | Input Monitor, recording and replay | [INPUT_MONITOR](docs/INPUT_MONITOR.md), [RECORDING_AND_SETUP](docs/RECORDING_AND_SETUP.md) |
-| How it is built | [ARCHITECTURE](docs/ARCHITECTURE.md) |
-| What was tested, and what was not | [VALIDATION](docs/VALIDATION.md), [INPUT_TESTING](docs/INPUT_TESTING.md) |
 | Trust boundaries and known limits | [SECURITY](SECURITY.md) |
-| Plans | [ROADMAP](docs/ROADMAP.md) |
 
 ## Limits worth knowing
 

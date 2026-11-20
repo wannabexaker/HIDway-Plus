@@ -1,9 +1,8 @@
 # Input sources and routing
 
 Updated 2026-10-30. The input changes are implemented and covered by host tests.
-Actual AnyDesk drivers, target applications and USB hardware still require the
-acceptance checks in [INPUT_TESTING.md](INPUT_TESTING.md). See
-[VALIDATION.md](VALIDATION.md) for deployment and test evidence.
+Actual AnyDesk drivers, target applications and USB hardware still have to be
+checked on the real setup.
 
 The route is Windows → UDP → Pi relay → UART → Pico → USB HID. Pico USB has
 no direct Windows command channel.
@@ -61,8 +60,7 @@ To return, select **Remote PC -> Gaming PC** and **Apply and save**.
 
 **Game compatibility:** the user confirmed working AION2 input after starting
 HIDway on the Gaming PC with matching elevated privileges and setting laptop
-Moonlight to relative mouse mode. The earlier configuration failed. See
-[the current validation result](VALIDATION.md) for the scope of that acceptance.
+Moonlight to relative mouse mode. The earlier configuration failed.
 Native-pointer mode does not convert movement into USB HID or isolate original
 Raw Input. Running input capture below the target's integrity level can prevent
 capture; no automatic elevation is performed.
