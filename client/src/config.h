@@ -35,6 +35,7 @@ typedef struct {
     int window_x, window_y; /* last window position; INT_MIN = unset */
     int badge;              /* show the badge while disarmed (click to arm) */
     int badge_x, badge_y;   /* badge top centre on screen; INT_MIN = unset */
+    int compact;            /* 1 = compact main window (no recent list / settings fields) */
     char loopback_device[64]; /* Raw Input path token excluded from capture */
     char key_hex[80];       /* end-to-end key (64 hex chars); empty = encryption off */
 } hidway_config_t;

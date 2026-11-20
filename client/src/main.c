@@ -10,6 +10,7 @@
 #include <uxtheme.h>
 #include <wtsapi32.h>
 #include <commdlg.h>
+#include <commctrl.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -48,6 +49,7 @@ static void open_monitor(void);
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shcore.lib")
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "comctl32.lib") /* tooltips only */
 
 /* ---- DWM attributes (Windows 11) ---------------------------------------- */
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -118,8 +120,14 @@ enum {
     ID_CB_KBD, ID_CB_MOUSE, ID_CB_HIST, ID_SAVE, ID_ARM, ID_PANIC,
     ID_SRC_PHYSICAL, ID_SRC_TOUCHPAD, ID_SRC_VIRTUAL,
     ID_OPTIONS, ID_ROUTE, ID_REPEAT, ID_REPEAT_BUTTON, ID_REPEAT_CPS, ID_REPEAT_SOURCE, ID_CLICK_CPS, ID_POINTER,
-    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO, ID_UPDATES
+    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO, ID_UPDATES,
+    ID_COMPACT /* new IDs go last: tests post commands by number */
 };
+
+/* Logical (96 DPI) window sizes: full and compact layout. */
+#define LAYOUT_W 520
+#define LAYOUT_FULL_H 706
+#define LAYOUT_COMPACT_H 398
 
 enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 
@@ -155,6 +163,13 @@ enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 #define C_LIVE_TX   RGB(130, 230, 140)
 #define C_WARN      RGB(248, 96, 88)
 #define C_AMBER     RGB(214, 160, 56)
+/* ARM while disarmed: the primary action, a restrained tint of C_LIVE. */
+#define C_ARM       RGB(36, 72, 46)
+#define C_ARM_H     RGB(43, 86, 55)
+#define C_ARM_P     RGB(31, 60, 39)
+#define C_ARM_BD    RGB(52, 112, 67)
+#define C_ARM_BD_H  RGB(68, 146, 87)
+#define C_ARM_TX    RGB(214, 246, 218)
 
 typedef struct {
     int W, H;
@@ -168,7 +183,8 @@ typedef struct {
     RECT cb[3];
     RECT src[3];
     int hk_cy;
-    RECT arm, panic;
+    RECT arm, panic, local_pico;
+    RECT updates, compact_btn, monitor_btn, replay_btn, options_btn;
     int band_bottom;
 } layout_t;
 
@@ -177,6 +193,12 @@ static struct {
     int preview; /* 0 normal, 1 preview disarmed, 2 preview armed */
     char shot_path[MAX_PATH];
     char hot_list[96];
+    /* preview-only: --compact, --options, --dpi=N, --work-height=N (physical px) */
+    int preview_compact, preview_options, preview_work_h;
+    UINT preview_dpi;
+
+    int compact;     /* layout in use; g.cfg.compact is the saved preference */
+    int in_sizemove; /* the user is dragging the window */
 
     int armed;
     int net_ok;
@@ -238,7 +260,7 @@ static struct {
     HWND hwnd;
     HWND history, clear, edit[4], cb[3], src[3], save, arm, panic;
     HWND options,options_button,route,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps,options_hint;
-    HWND monitor_button,replay_button,updates_button,local_pico_button;
+    HWND monitor_button,replay_button,updates_button,local_pico_button,compact_button,tooltip;
     char local_pico_notice[192];
     int options_repeat;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
@@ -1190,11 +1212,14 @@ static COLORREF badge_texts(char *st, size_t st_cap, char *hint, size_t hint_cap
 {
     char hk[48];
     hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
-    if (!g.armed) { /* a small "Arm" pill with a red dot; no hint, to keep it out of the way */
+    if (!g.armed) { /* a small "Arm" pill; no hint, to keep it out of the way */
         hint[0] = 0;
         (void)hint_cap;
-        snprintf(st, st_cap, link_recent() ? "Arm" : "Offline");
-        return C_WARN;
+        /* Red stays for a relay that does not answer; plain "disarmed,
+         * nothing wrong" is a neutral grey (red reads as live/recording). */
+        int up = link_recent();
+        snprintf(st, st_cap, up ? "Arm" : "Offline");
+        return up ? C_TEXT3 : C_WARN;
     }
     snprintf(hint, hint_cap, "%s to release", hk);
     if (!link_recent()) {
@@ -1910,14 +1935,17 @@ static RECT R(int l, int t, int r, int b)
 static void compute_layout(void)
 {
     layout_t *L = &g.L;
-    const int W = 520, P = 18, XL = P + 14, XR = W - P - 14;
+    const int W = LAYOUT_W, P = 18, XL = P + 14, XR = W - P - 14;
 
     L->W = S(W);
     L->mark = R(P, 18, P + 30, 48);
     L->title_x = S(P + 42);
     L->title_y = S(15);
     L->sub_y = S(38);
-    L->pill = R(W - P - 140, 20, W - P, 46);
+    /* State pill above the Updates button: the version beside the title gets
+     * the whole width up to the pill. */
+    L->pill = R(W - P - 140, 8, W - P, 34);
+    L->updates = R(W - P - 80, 38, W - P, 58);
 
     /* CONNECTION: title row + four stat tiles */
     L->stats = R(P, 64, W - P, 164);
@@ -1935,9 +1963,15 @@ static void compute_layout(void)
     L->clear = R(XR - 64, 290, XR, 314);
     L->list = R(XL - 2, 322, XR + 2, 412);
 
-    /* SETTINGS */
-    L->settings = R(P, 436, W - P, 628);
-    L->save = R(XR - 64, 442, XR, 466);
+    /* SETTINGS: compact keeps only its header row of buttons, directly below
+     * LIVE INPUT; RECENT INPUT and the fields are hidden. */
+    int sy = g.compact ? 284 : 436, by = sy + 6;
+    L->settings = R(P, sy, W - P, g.compact ? sy + 36 : 628);
+    L->save = R(XR - 64, by, XR, by + 24);
+    L->compact_btn = R(104, by, 154, by + 24);
+    L->monitor_btn = R(160, by, 230, by + 24);
+    L->replay_btn = R(236, by, 306, by + 24);
+    L->options_btn = R(312, by, 418, by + 24);
     L->label_y = S(474);
     const int fw[4] = {226, 72, 66, 72};
     int x = XL - 2;
@@ -1954,11 +1988,54 @@ static void compute_layout(void)
     L->hk_cy = S(606);
 
     /* action bar */
-    L->arm = R(P, 642, 194, 688);
-    L->panic = R(W - P - 150, 642, W - P, 688);
+    int ay = g.compact ? sy + 50 : 642;
+    L->arm = R(P, ay, 194, ay + 46);
+    L->local_pico = R(202, ay, 344, ay + 46);
+    L->panic = R(W - P - 150, ay, W - P, ay + 46);
 
-    L->H = S(706);
+    L->H = S(g.compact ? LAYOUT_COMPACT_H : LAYOUT_FULL_H);
     L->band_bottom = S(274);
+}
+
+/* Would the full layout, with its frame, fit the work area of `mon`? */
+static int full_layout_fits(HMONITOR mon)
+{
+    MONITORINFO mi = {sizeof mi};
+    if (!mon || !GetMonitorInfoA(mon, &mi))
+        return 1;
+    int work_h = mi.rcWork.bottom - mi.rcWork.top;
+    if (g.preview && g.preview_work_h > 0)
+        work_h = g.preview_work_h;
+    RECT wr = {0, 0, S(LAYOUT_W), S(LAYOUT_FULL_H)};
+    AdjustWindowRectExForDpi(&wr, WIN_STYLE, FALSE, 0, g.dpi);
+    return wr.bottom - wr.top <= work_h;
+}
+
+/* Compact when saved so, or when the full window would not fit; the saved
+ * preference itself is not changed by the fallback. */
+static int want_compact(HMONITOR mon)
+{
+    return g.cfg.compact || (g.preview && g.preview_compact) || !full_layout_fits(mon);
+}
+
+/* Keep the window, and above all its action row, inside the work area. */
+static void keep_on_work_area(HWND hwnd)
+{
+    if (!hwnd || g.shot_path[0]) /* screenshot runs render off-screen on purpose */
+        return;
+    RECT wr;
+    MONITORINFO mi = {sizeof mi};
+    if (!GetWindowRect(hwnd, &wr) ||
+        !GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        return;
+    RECT a = mi.rcWork;
+    int w = wr.right - wr.left, h = wr.bottom - wr.top, x = wr.left, y = wr.top;
+    if (x + w > a.right) x = a.right - w;
+    if (x < a.left) x = a.left;
+    if (y + h > a.bottom) y = a.bottom - h; /* too tall: the bottom row wins */
+    if (y < a.top && h <= a.bottom - a.top) y = a.top;
+    if (x != wr.left || y != wr.top)
+        SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static void place(HWND h, RECT r)
@@ -1976,11 +2053,15 @@ static void apply_layout(void)
     SendMessageA(g.history, LB_SETITEMHEIGHT, 0, S(21));
     place(g.clear, L->clear);
     place(g.save, L->save);
-    place(g.options_button,R(300,442,414,466));
-    place(g.monitor_button,R(132,442,212,466));
-    place(g.updates_button,R(282,16,356,38));
-    place(g.replay_button,R(220,442,292,466));
-    place(g.local_pico_button,R(202,642,344,688));
+    place(g.options_button,L->options_btn);
+    place(g.monitor_button,L->monitor_btn);
+    place(g.updates_button,L->updates);
+    place(g.replay_button,L->replay_btn);
+    place(g.local_pico_button,L->local_pico);
+    if (g.compact_button) {
+        place(g.compact_button, L->compact_btn);
+        SetWindowTextA(g.compact_button, g.compact ? "More" : "Less");
+    }
     place(g.arm, L->arm);
     place(g.panic, L->panic);
     for (int i = 0; i < 3; i++)
@@ -1998,6 +2079,19 @@ static void apply_layout(void)
         place(g.edit[i], e);
         SendMessageA(g.edit[i], WM_SETFONT, (WPARAM)g.f_body, TRUE);
         SendMessageA(g.edit[i], EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+    }
+
+    /* Compact hides RECENT INPUT and the settings fields; they keep their
+     * values and states, and come back unchanged with More. */
+    HWND fields[] = {g.history, g.clear, g.save, g.edit[0], g.edit[1], g.edit[2], g.edit[3],
+                     g.cb[0], g.cb[1], g.cb[2], g.src[0], g.src[1], g.src[2]};
+    HWND focus = GetFocus();
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+        if (!fields[i])
+            continue;
+        if (g.compact && focus == fields[i] && g.compact_button)
+            SetFocus(g.compact_button); /* never leave the keyboard on a hidden field */
+        ShowWindow(fields[i], g.compact ? SW_HIDE : SW_SHOWNA);
     }
 }
 
@@ -2086,9 +2180,10 @@ static void paint_header(HDC dc)
         DrawIconEx(dc, L->mark.left, L->mark.top, g.mark_icon, L->mark.right - L->mark.left,
                    L->mark.bottom - L->mark.top, 0, NULL, DI_NORMAL);
     text_at(dc, g.f_title, C_TEXT, L->title_x, L->title_y, "HIDway");
-    /* the version on the title's baseline */
+    /* the version on the title's baseline, with room up to the state pill */
+    int version_top = L->title_y + font_ascent(dc, g.f_title) - font_ascent(dc, g.f_label);
     RECT version={L->title_x + text_w(dc,g.f_title,"HIDway")+S(8),
-        L->title_y + font_ascent(dc,g.f_title)-font_ascent(dc,g.f_label),S(274),S(38)};
+        version_top,L->pill.left-S(10),version_top+font_h(dc,g.f_label)};
     text_in(dc,g.f_label,C_TEXT3,version,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS,HIDWAY_VERSION);
     text_at(dc, g.f_sub, C_TEXT3, L->title_x, L->sub_y, "Remote keyboard & mouse over real USB HID");
 
@@ -2295,6 +2390,8 @@ static void paint_settings(HDC dc)
 {
     layout_t *L = &g.L;
     card(dc, L->settings, "SETTINGS");
+    if (g.compact) /* only the header row of buttons */
+        return;
 
     static const char *labels[4] = {"Relay address", "Port", "Rate (Hz)", "Disarm (ms)"};
     for (int i = 0; i < 4; i++) {
@@ -2350,7 +2447,7 @@ static void paint(HWND hwnd)
         paint_stats(dc);
         paint_live(dc);
     }
-    if (IntersectRect(&tmp, &ps.rcPaint, &g.L.recent))
+    if (!g.compact && IntersectRect(&tmp, &ps.rcPaint, &g.L.recent))
         paint_recent(dc);
     if (IntersectRect(&tmp, &ps.rcPaint, &g.L.settings))
         paint_settings(dc);
@@ -2396,9 +2493,12 @@ static void draw_button(const DRAWITEMSTRUCT *d)
     bool down = (d->itemState & ODS_SELECTED) != 0;
     bool focus = (d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT);
 
-    /* paint what is behind the control first: no default-grey corners */
+    /* paint what is behind the control first: no default-grey corners. The
+     * Input options window has no cards, only the window background. */
+    HWND parent = GetParent(d->hwndItem);
     fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_UPDATES ||
-                       (id == ID_LOCAL_PICO && d->hwndItem == g.local_pico_button)) ? C_BG : C_CARD);
+                       (id == ID_LOCAL_PICO && d->hwndItem == g.local_pico_button) ||
+                       (g.options && parent == g.options)) ? C_BG : C_CARD);
 
     char label[32];
     GetWindowTextA(d->hwndItem, label, sizeof label);
@@ -2432,9 +2532,19 @@ static void draw_button(const DRAWITEMSTRUCT *d)
         HFONT f = g.f_btn;
         int rad = S(7);
         if (id == ID_ARM) {
-            fill = down ? C_BTN_P : hot ? C_BTN_H : C_BTN;
-            bd = fill;
-            tx = C_WHITE;
+            if (d->itemState & ODS_DISABLED) {
+                fill = C_SEC;
+                bd = C_SEC_BD;
+                tx = C_TEXT3;
+            } else if (!g.armed) { /* the primary action while disarmed */
+                fill = down ? C_ARM_P : hot ? C_ARM_H : C_ARM;
+                bd = hot ? C_ARM_BD_H : C_ARM_BD;
+                tx = hot ? C_WHITE : C_ARM_TX;
+            } else {
+                fill = down ? C_BTN_P : hot ? C_BTN_H : C_BTN;
+                bd = fill;
+                tx = C_WHITE;
+            }
             f = g.f_btn_big;
             rad = S(10);
             strcpy(label, g.armed ? "DISARM" : "ARM");
@@ -2627,7 +2737,8 @@ static void refresh_source_controls(void)
 {
     if(g.src[0])EnableWindow(g.src[0],!g.cfg.loopback_mode);
     if(g.src[1])EnableWindow(g.src[1],!g.cfg.loopback_mode);
-    if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Gaming PC":"Remote PC");
+    /* the route in use; the ellipsis says the button opens Input options */
+    if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Gaming PC...":"Remote PC...");
     if(g.local_pico_button)InvalidateRect(g.local_pico_button,NULL,FALSE);
     for(int i=0;i<3;i++)if(g.src[i])InvalidateRect(g.src[i],NULL,FALSE);
 }
@@ -2655,12 +2766,105 @@ static void option_items(HWND combo,const char *const *items,unsigned n,int sele
     SendMessageA(combo,CB_SETCURSEL,(WPARAM)selected,0);
     SetWindowTheme(combo,L"DarkMode_Explorer",NULL);
 }
+/* Input options combo boxes. The client has no common-controls v6 manifest,
+ * so visual styles (and DarkMode themes) never apply to them: like the Input
+ * Monitor's dropdowns the items are owner-drawn, and the closed box with its
+ * drop arrow is painted here in the field colours. */
+static void chevron(HDC dc, int cx, int cy, COLORREF c)
+{
+    void *gr = gp_begin(dc);
+    void *pen = NULL;
+    float u = (float)g.dpi / 96.0f;
+    GdipCreatePen1(argb(c), u * 1.6f, 2 /* UnitPixel */, &pen);
+    GdipSetPenStartCap(pen, 2);
+    GdipSetPenEndCap(pen, 2);
+    GdipSetPenLineJoin(pen, 2);
+    HW_PointF pts[3] = {{cx - 4.0f * u, cy - 2.0f * u}, {(float)cx, cy + 2.0f * u}, {cx + 4.0f * u, cy - 2.0f * u}};
+    GdipDrawLines(gr, pen, pts, 3);
+    GdipDeletePen(pen);
+    GdipDeleteGraphics(gr);
+}
+static void combo_text(HWND combo, LRESULT item, char *text, size_t cap)
+{
+    text[0] = 0;
+    if (item >= 0 && SendMessageA(combo, CB_GETLBTEXTLEN, (WPARAM)item, 0) < (LRESULT)cap)
+        SendMessageA(combo, CB_GETLBTEXT, (WPARAM)item, (LPARAM)text);
+}
+static void draw_combo_item(const DRAWITEMSTRUCT *d)
+{
+    RECT r = d->rcItem;
+    int edit = (d->itemState & ODS_COMBOBOXEDIT) != 0, off = (d->itemState & ODS_DISABLED) != 0;
+    fill_solid(d->hDC, r, !edit && (d->itemState & ODS_SELECTED) ? C_CHIP : C_FIELD);
+    char text[128];
+    combo_text(d->hwndItem, d->itemID == (UINT)-1 ? -1 : (LRESULT)d->itemID, text, sizeof text);
+    r.left = edit ? S(10) : r.left + S(10); /* the closed box: same x as paint_combo */
+    text_in(d->hDC, g.f_body, off ? C_TEXT3 : C_TEXT, r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
+}
+static void paint_combo(HWND h, HDC wdc)
+{
+    RECT r;
+    GetClientRect(h, &r);
+    if (r.right <= 0 || r.bottom <= 0)
+        return;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    int on = IsWindowEnabled(h) != 0;
+    fill_solid(dc, r, C_BG);
+    round_rect(dc, r, S(6), C_FIELD, on && GetFocus() == h ? C_FOCUS_BD : C_FIELD_BD);
+    char text[128];
+    combo_text(h, SendMessageA(h, CB_GETCURSEL, 0, 0), text, sizeof text);
+    RECT tr = {S(10), 0, r.right - S(30), r.bottom};
+    text_in(dc, g.f_body, on ? C_TEXT : C_TEXT3, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
+    chevron(dc, r.right - S(16), r.bottom / 2, on ? C_TEXT2 : C_TEXT3);
+    BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+}
+static LRESULT CALLBACK combo_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    WNDPROC orig = (WNDPROC)GetPropA(h, "op");
+    if (!orig)
+        return DefWindowProcA(h, msg, wp, lp);
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        paint_combo(h, dc);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    /* The classic combo draws its button/selection straight to the screen
+     * on these; paint the dark box again right after. */
+    case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED: case WM_KEYDOWN: case WM_CHAR: case CB_SETCURSEL: {
+        LRESULT res = CallWindowProcA(orig, h, msg, wp, lp);
+        InvalidateRect(h, NULL, FALSE);
+        return res;
+    }
+    case WM_NCDESTROY:
+        RemovePropA(h, "op");
+        break;
+    }
+    return CallWindowProcA(orig, h, msg, wp, lp);
+}
 static void option_route_refresh(void)
 {
     int loopback=SendMessageA(g.route,CB_GETCURSEL,0,0)==1;
     if(loopback)SendMessageA(g.repeat_source,CB_SETCURSEL,2,0);
-    EnableWindow(g.repeat_source,!loopback);
+    EnableWindow(g.repeat_source,!loopback&&g.options_repeat);
     EnableWindow(g.pointer_route,loopback);
+}
+/* Button / source / speed only matter while Hold to repeat is ticked; they
+ * keep their values while greyed out. Call after every control exists. */
+static void option_repeat_refresh(void)
+{
+    EnableWindow(g.repeat_button,g.options_repeat);
+    EnableWindow(g.repeat_cps,g.options_repeat);
+    option_route_refresh();
 }
 static void options_error(HWND h,const char *message)
 {
@@ -2719,7 +2923,7 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
 {
     switch(msg) {
     case WM_CREATE: {
-        const DWORD combo=CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL;
+        const DWORD combo=CBS_DROPDOWNLIST|CBS_OWNERDRAWFIXED|CBS_HASSTRINGS|WS_TABSTOP|WS_VSCROLL;
         option_control(h,"STATIC","Send input to",0,0,20,20,130,20);
         g.route=option_control(h,"COMBOBOX","",combo,ID_ROUTE,160,16,280,140);
         const char *routes[]={"Remote PC -> Gaming PC","Gaming PC (Pico connected here)"};
@@ -2741,7 +2945,8 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
                                "Physical + virtual","Touchpad + virtual","All selected sources"};
         int selected=0;for(int i=0;i<7;i++)if(repeat_source_masks[i]==g.cfg.repeat_sources)selected=i;
         option_items(g.repeat_source,sources,7,selected);
-        option_route_refresh();
+        HWND combos[]={g.route,g.pointer_route,g.repeat_button,g.repeat_source};
+        for(size_t i=0;i<sizeof combos/sizeof combos[0];i++)subclass(combos[i],combo_proc);
         char text[24];snprintf(text,sizeof text,"%d",g.cfg.repeat_cps);
         option_control(h,"STATIC","Repeat clicks/sec",0,0,20,242,136,20);
         g.repeat_cps=option_control(h,"EDIT",text,ES_NUMBER|WS_BORDER|WS_TABSTOP,ID_REPEAT_CPS,160,238,78,28);
@@ -2753,15 +2958,26 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
         subclass(local,btn_proc);
         g.options_hint=option_control(h,"STATIC","Preset: Pico USB connected here; relay stays on the Pi.\r\n"
             "Virtual input; native pointer; repeat off. Saves without ARM.\r\n"
-            "Hold to repeat replaces dragging for its button/source.",0,0,20,370,420,48);
+            "Hold to repeat replaces dragging for its button/source.",0,0,20,370,420,60);
         uint32_t limited=g.last_limited;
         char info[96];snprintf(info,sizeof info,"Last ARM: %lu extra click attempts limited",(unsigned long)limited);
-        option_control(h,"STATIC",info,0,0,20,426,420,24);
-        HWND apply=option_control(h,"BUTTON","Apply and save",BS_OWNERDRAW|WS_TABSTOP,ID_SAVE,278,466,162,34);
-        subclass(apply,btn_proc);return 0;
+        option_control(h,"STATIC",info,0,0,20,438,420,24);
+        /* Cancel closes without saving, exactly like the title-bar close. */
+        HWND cancel=option_control(h,"BUTTON","Cancel",BS_OWNERDRAW|WS_TABSTOP,IDCANCEL,160,474,110,34);
+        subclass(cancel,btn_proc);
+        HWND apply=option_control(h,"BUTTON","Apply and save",BS_OWNERDRAW|WS_TABSTOP,ID_SAVE,278,474,162,34);
+        subclass(apply,btn_proc);
+        option_repeat_refresh();return 0;
     }
-    case WM_DRAWITEM:draw_button((const DRAWITEMSTRUCT*)l);return TRUE;
+    case WM_MEASUREITEM:((MEASUREITEMSTRUCT*)l)->itemHeight=(UINT)S(24);return TRUE;
+    case WM_DRAWITEM:
+        if(((const DRAWITEMSTRUCT*)l)->CtlType==ODT_COMBOBOX)draw_combo_item((const DRAWITEMSTRUCT*)l);
+        else draw_button((const DRAWITEMSTRUCT*)l);
+        return TRUE;
     case WM_CTLCOLORSTATIC:
+        if((HWND)l==g.repeat_cps||(HWND)l==g.click_cps) { /* a greyed-out field stays a field */
+            SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT3);return (LRESULT)g.b_field;
+        }
         SetBkColor((HDC)w,C_BG);SetTextColor((HDC)w,C_TEXT2);return (LRESULT)g.b_bg;
     case WM_CTLCOLOREDIT:case WM_CTLCOLORLISTBOX:
         SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT);return (LRESULT)g.b_field;
@@ -2769,10 +2985,15 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
         if(LOWORD(w)==ID_LOCAL_PICO&&HIWORD(w)==BN_CLICKED) {
             use_local_pico(h);return 0;
         }
+        if(l&&(LOWORD(w)==ID_ROUTE||LOWORD(w)==ID_POINTER||LOWORD(w)==ID_REPEAT_BUTTON||LOWORD(w)==ID_REPEAT_SOURCE)&&
+           (HIWORD(w)==CBN_DROPDOWN||HIWORD(w)==CBN_CLOSEUP||HIWORD(w)==CBN_SELCHANGE))
+            InvalidateRect((HWND)l,NULL,FALSE); /* repaint the dark closed box */
         if(LOWORD(w)==ID_ROUTE&&HIWORD(w)==CBN_SELCHANGE){option_route_refresh();return 0;}
         if(LOWORD(w)==ID_REPEAT&&HIWORD(w)==BN_CLICKED) {
-            g.options_repeat=!g.options_repeat;InvalidateRect(g.repeat,NULL,FALSE);return 0;
+            g.options_repeat=!g.options_repeat;InvalidateRect(g.repeat,NULL,FALSE);
+            option_repeat_refresh();return 0;
         }
+        if(LOWORD(w)==IDCANCEL&&HIWORD(w)==BN_CLICKED){SendMessageA(h,WM_CLOSE,0,0);return 0;}
         if(LOWORD(w)==ID_SAVE&&HIWORD(w)==BN_CLICKED) {
             int cps=option_speed(g.repeat_cps),limit=option_speed(g.click_cps);
             if(cps<1||cps>25||limit<1||limit>25) {
@@ -2794,7 +3015,8 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
     case WM_CLOSE:DestroyWindow(h);return 0;
     case WM_DESTROY:
         g.options=NULL;
-        if(g.hwnd){EnableWindow(g.hwnd,TRUE);SetForegroundWindow(g.hwnd);}
+        /* a screenshot run renders off-screen and must not take the foreground */
+        if(g.hwnd){EnableWindow(g.hwnd,TRUE);if(!g.shot_path[0])SetForegroundWindow(g.hwnd);}
         return 0;
     }
     return DefWindowProcA(h,msg,w,l);
@@ -2807,11 +3029,11 @@ static void show_input_options(void)
     wc.hbrBackground=g.b_bg;wc.lpszClassName="HIDwayInputOptions";
     RegisterClassA(&wc);
     RECT parent;GetWindowRect(g.hwnd,&parent);
-    RECT size={0,0,S(462),S(520)};
+    RECT size={0,0,S(462),S(528)};
     AdjustWindowRectExForDpi(&size,WIN_STYLE,FALSE,0,g.dpi);
     g.options=CreateWindowExA(0,wc.lpszClassName,"Input options",WIN_STYLE,parent.left+S(24),parent.top+S(32),
         size.right-size.left,size.bottom-size.top,g.hwnd,NULL,g.inst,NULL);
-    if(g.options){EnableWindow(g.hwnd,FALSE);apply_window_chrome(g.options);ShowWindow(g.options,SW_SHOW);}
+    if(g.options){EnableWindow(g.hwnd,FALSE);apply_window_chrome(g.options);ShowWindow(g.options,g.shot_path[0]?SW_SHOWNOACTIVATE:SW_SHOW);}
 }
 
 static void create_controls(HWND h)
@@ -2829,6 +3051,7 @@ static void create_controls(HWND h)
     g.updates_button=mk(h,"BUTTON","Updates",BS_OWNERDRAW|WS_TABSTOP,ID_UPDATES);
     g.local_pico_button=mk(h,"BUTTON","Pico on this PC",BS_OWNERDRAW|WS_TABSTOP,ID_LOCAL_PICO);
     g.replay_button=mk(h,"BUTTON","Replay...",BS_OWNERDRAW|WS_TABSTOP,ID_REPLAY);
+    g.compact_button=mk(h,"BUTTON",g.compact?"More":"Less",BS_OWNERDRAW|WS_TABSTOP,ID_COMPACT);
     g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
     g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
     g.cb[0] = mk(h, "BUTTON", "Keyboard", BS_OWNERDRAW | WS_TABSTOP, ID_CB_KBD);
@@ -2848,12 +3071,73 @@ static void create_controls(HWND h)
     g.edit[3] = mk(h, "EDIT", tmp, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_AUTO);
 
     HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2],
-                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button,g.updates_button,g.local_pico_button};
+                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button,g.updates_button,g.local_pico_button,
+                   g.compact_button};
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
         subclass(btns[i], btn_proc);
 
     apply_layout();
     refresh_source_controls();
+}
+
+/* Short hover help for the main window's buttons. A tooltip never takes
+ * the focus or the foreground (shown no-activate), and it appears only while
+ * the main window itself is active, so the badge and capture are unaffected. */
+static void add_tooltips(HWND hwnd)
+{
+    INITCOMMONCONTROLSEX icc = {sizeof icc, ICC_WIN95_CLASSES};
+    InitCommonControlsEx(&icc);
+    g.tooltip = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_NOPREFIX,
+                                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL,
+                                g.inst, NULL);
+    if (!g.tooltip)
+        return;
+    SendMessageA(g.tooltip, TTM_SETMAXTIPWIDTH, 0, S(300));
+    SendMessageA(g.tooltip, TTM_SETTIPBKCOLOR, C_CARD, 0); /* no visual styles: colours apply */
+    SendMessageA(g.tooltip, TTM_SETTIPTEXTCOLOR, C_TEXT, 0);
+    struct { HWND h; const char *text; } tips[] = {
+        {g.arm, "ARM: send this PC's keyboard and mouse to the Gaming PC. Press again (or the toggle hotkey) to DISARM."},
+        {g.local_pico_button, "Select and save the same-PC Pico preset (Gaming PC route). Does not ARM."},
+        {g.panic, "PANIC: release every key and button immediately and disarm."},
+        {g.options_button, "Open Input options: route (Remote PC / Gaming PC), pointer and hold-to-repeat."},
+        {g.monitor_button, "Open the Input Monitor: devices, live events and recordings."},
+        {g.replay_button, "Load a recording and replay it through the Pi and Pico after confirmation."},
+        {g.compact_button, "Less: compact window without the recent list and settings fields. More: show them again."},
+        {g.save, "Save the relay address, port, rate and disarm settings."},
+        {g.clear, "Clear the recent input list (kept in memory only)."},
+        {g.updates_button, "Check for HIDway updates."},
+    };
+    for (size_t i = 0; i < sizeof tips / sizeof tips[0]; i++) {
+        if (!tips[i].h)
+            continue;
+        TTTOOLINFOA ti = {0};
+        ti.cbSize = TTTOOLINFOA_V2_SIZE; /* comctl32 v5: the larger v6 size is rejected */
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = hwnd;
+        ti.uId = (UINT_PTR)tips[i].h;
+        ti.lpszText = (LPSTR)tips[i].text;
+        SendMessageA(g.tooltip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+    }
+}
+
+static void resize_to_layout(HWND hwnd, const RECT *pos);
+/* Switch between the full and the compact layout. `remember` stores the
+ * choice in hidway.ini (the user's toggle); the start-up fallback does not. */
+static void set_compact(int on, int remember)
+{
+    g.compact = on ? 1 : 0;
+    if (remember && g.cfg.compact != g.compact) {
+        g.cfg.compact = g.compact;
+        if (!g.preview)
+            hidway_config_save("hidway.ini", &g.cfg);
+    }
+    if (!g.hwnd)
+        return;
+    compute_layout();
+    apply_layout();
+    resize_to_layout(g.hwnd, NULL);
+    keep_on_work_area(g.hwnd);
+    InvalidateRect(g.hwnd, NULL, FALSE);
 }
 
 static void apply_window_chrome(HWND hwnd)
@@ -2886,7 +3170,8 @@ static void enable_dark_menus(void)
 static void resize_to_layout(HWND hwnd, const RECT *pos)
 {
     RECT wr = {0, 0, g.L.W, g.L.H};
-    AdjustWindowRectExForDpi(&wr, WIN_STYLE, FALSE, 0, g.dpi);
+    /* a --dpi preview scales the content only; the frame keeps the real DPI */
+    AdjustWindowRectExForDpi(&wr, WIN_STYLE, FALSE, 0, g.preview_dpi ? GetDpiForWindow(hwnd) : g.dpi);
     UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | (pos ? 0 : SWP_NOMOVE);
     SetWindowPos(hwnd, NULL, pos ? pos->left : 0, pos ? pos->top : 0,
                  wr.right - wr.left, wr.bottom - wr.top, flags);
@@ -3055,13 +3340,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_CREATE:
         g.hwnd = hwnd;
-        g.dpi = GetDpiForWindow(hwnd);
+        g.dpi = g.preview_dpi ? g.preview_dpi : GetDpiForWindow(hwnd);
         create_fonts();
+        g.compact = want_compact(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST));
         compute_layout();
         load_mark_icon();
         create_controls(hwnd);
         apply_window_chrome(hwnd);
         resize_to_layout(hwnd, NULL);
+        keep_on_work_area(hwnd);
+        if (!g.shot_path[0])
+            add_tooltips(hwnd);
         badge_create();
         if (!g.preview) {
             WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
@@ -3074,6 +3363,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetTimer(hwnd, TIMER_PROBE, PROBE_MS, NULL);
         } else {
             preview_fill();
+            if (g.preview_options)
+                show_input_options();
             if (g.shot_path[0])
                 SetTimer(hwnd, TIMER_SHOT, 900, NULL);
         }
@@ -3084,13 +3375,23 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DPICHANGED: {
         g.dpi = HIWORD(wp);
         create_fonts();
+        /* the full window may stop (or start) fitting on the new monitor */
+        g.compact = want_compact(MonitorFromRect((const RECT *)lp, MONITOR_DEFAULTTONEAREST));
         compute_layout();
         load_mark_icon();
         resize_to_layout(hwnd, (const RECT *)lp);
         apply_layout();
+        if (!g.in_sizemove) /* never fight a drag in progress */
+            keep_on_work_area(hwnd);
         RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
         return 0;
     }
+    case WM_ENTERSIZEMOVE:
+        g.in_sizemove = 1;
+        break;
+    case WM_EXITSIZEMOVE:
+        g.in_sizemove = 0;
+        break;
 
     case WM_ERASEBKGND:
         return 1;
@@ -3124,7 +3425,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_LBUTTONDOWN: {
         POINT pt = {(short)LOWORD(lp), (short)HIWORD(lp)};
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 4 && !g.compact; i++) /* compact: the fields are hidden */
             if (PtInRect(&g.L.frame[i], pt)) {
                 SetFocus(g.edit[i]);
                 SendMessageA(g.edit[i], EM_SETSEL, 0, -1);
@@ -3265,6 +3566,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                             LOWORD(wp) == ID_SRC_VIRTUAL))
                 set_armed(0); /* a capture-policy change always starts from a released state */
             switch (LOWORD(wp)) {
+            case ID_COMPACT:set_compact(!g.compact,1);break; /* layout only: never disarms */
             case ID_MONITOR:open_monitor();break;
             case ID_REPLAY:replay_choose();break;
             case ID_OPTIONS:show_input_options();break;
@@ -3331,7 +3633,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == TIMER_SHOT) {
             KillTimer(hwnd, TIMER_SHOT);
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            save_screenshot(hwnd);
+            if (g.options) /* --options: the Input options window instead */
+                RedrawWindow(g.options, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            save_screenshot(g.options ? g.options : hwnd);
             DestroyWindow(hwnd);
         }
         return 0;
@@ -3386,6 +3690,21 @@ static void parse_args(const char *cmd)
             n = sizeof g.shot_path - 1;
         memcpy(g.shot_path, s, n);
         g.shot_path[n] = 0;
+    }
+    /* Preview-only layout aids (ignored without --preview / --preview-armed). */
+    if (g.preview) {
+        g.preview_compact = strstr(cmd, "--compact") != NULL;
+        g.preview_options = strstr(cmd, "--options") != NULL;
+        const char *dpi = strstr(cmd, "--dpi=");
+        if (dpi) {
+            int v = atoi(dpi + 6);
+            g.preview_dpi = v >= 96 && v <= 384 ? (UINT)v : 0;
+        }
+        const char *work = strstr(cmd, "--work-height=");
+        if (work) {
+            int v = atoi(work + 14);
+            g.preview_work_h = v >= 200 && v <= 10000 ? v : 0;
+        }
     }
     const char *hot = strstr(cmd, "--hot=");
     if (hot) {
@@ -3474,7 +3793,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (!RegisterClassA(&bc))
         return 1;
 
-    g.dpi = GetDpiForSystem();
+    g.dpi = g.preview_dpi ? g.preview_dpi : GetDpiForSystem();
     compute_layout();
     RECT wr = {0, 0, g.L.W, g.L.H};
     AdjustWindowRectExForDpi(&wr, WIN_STYLE, FALSE, 0, g.dpi);

@@ -63,6 +63,21 @@ selected virtual events without taking target-app focus and excludes physical
 recapture. Routing is explicit; source checkbox changes no longer silently
 select another topology. Legacy virtual-only settings migrate to Gaming PC once.
 
+The main window has a full and a compact layout. **Less** / **More** in the
+SETTINGS row switches between them and stores the choice as `compact` in
+hidway.ini. Compact hides the recent-input list and the settings fields, which
+keep their values; the header, connection tiles, live input, the SETTINGS
+buttons and the ARM / Pico on this PC / PANIC row always stay. When the full
+window does not fit the work area of its monitor (for example 150 % scaling on
+a 1080p display) the client starts compact without changing the stored choice,
+re-evaluates on a DPI change, and keeps the window inside the work area with
+the action row reachable. Switching layout never arms or disarms. Hover help
+uses standard tooltips, shown without activation and only while the main window
+is active. The preview modes `--preview` / `--preview-armed` accept `--compact`,
+`--options`, `--dpi=N` and `--work-height=N`; they install no hooks and open no
+socket. `--shot=FILE` renders off-screen and is reliable for the full layout
+only: view the compact and options previews on screen.
+
 The input options window is a separate compact settings surface. Opening it
 disarms; ARM is blocked while it is open. Source/output/route changes begin
 from released state. Saves atomically replace the existing INI; changing the

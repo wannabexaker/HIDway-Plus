@@ -53,7 +53,7 @@ for scripted diagnostics, preserving the earlier counter's aggregate fields.
 
 ## Key/button details and recording
 
-The live last-input panel shows the device, source label and actual event:
+The **Last event** line above the device table shows the device, source label and actual event:
 key name, scan code, E0/E1 flags and virtual key; Left/Right/Middle/X1/X2;
 signed vertical/horizontal wheel units; relative/absolute coordinates.
 **Wheel rotation** and **Middle / wheel press** are different event types.
@@ -74,7 +74,7 @@ limits can omit events without a reliable API notification.
 On Gaming PC, choose **Pico devices only** to capture delivered HID actions.
 All Raw Input devices may include both original remote input and returned Pico
 input; recording both legs can duplicate the intended action in a later replay.
-Release held inputs before **Record** and choose a new `.hidrec` filename.
+Release held inputs before **Record** (the red-tinted button while idle) and choose a new `.hidrec` filename.
 The title displays RECORDING, elapsed time and event count. **Stop / Save**
 finishes the file and a UTF-8 `.hidrec.csv` beside it. CSV includes identities,
 names, manual source labels, Windows names/evidence and numeric event fields.

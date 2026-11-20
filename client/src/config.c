@@ -173,6 +173,14 @@ static int clampi(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* 1/0 as written by save, plus the usual words; anything else is off. */
+static int parse_flag(const char *v)
+{
+    if (!_stricmp(v, "true") || !_stricmp(v, "yes") || !_stricmp(v, "on"))
+        return 1;
+    return atoi(v) ? 1 : 0;
+}
+
 int hidway_config_load(const char *path, hidway_config_t *cfg)
 {
     set_defaults(cfg);
@@ -250,6 +258,8 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
             cfg->badge_x = (int)strtol(val, NULL, 10);
         } else if (!strcmp(key, "badge_y")) {
             cfg->badge_y = (int)strtol(val, NULL, 10);
+        } else if (!strcmp(key, "compact")) {
+            cfg->compact = parse_flag(val);
         } else if (!strcmp(key, "loopback_device")) {
             strncpy(cfg->loopback_device, val, sizeof cfg->loopback_device - 1);
             cfg->loopback_device[sizeof cfg->loopback_device - 1] = 0;
@@ -302,6 +312,7 @@ int hidway_config_save(const char *path, const hidway_config_t *cfg)
         fprintf(f, "badge_x = %d\n", cfg->badge_x);
         fprintf(f, "badge_y = %d\n", cfg->badge_y);
     }
+    fprintf(f, "compact = %d   # 1 = compact window: no recent list or settings fields\n", cfg->compact);
     if (cfg->window_x != INT_MIN && cfg->window_y != INT_MIN) {
         fprintf(f, "window_x = %d\n", cfg->window_x);
         fprintf(f, "window_y = %d\n", cfg->window_y);

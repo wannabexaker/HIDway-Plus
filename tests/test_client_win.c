@@ -71,6 +71,12 @@ static void reset_client(void)
     output_count = input_count = input_at = 0;
 }
 
+/* The control's own visibility, independent of the hidden fixture parent. */
+static int shown(HWND h)
+{
+    return h && (GetWindowLongPtrA(h, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
 static void queue_status(uint32_t session, uint32_t echoed_at)
 {
     hidway_status_pkt_t *p = &input[input_count++];
@@ -466,6 +472,100 @@ int main(void)
     reset_client();COPYDATASTRUCT invalid={RECORDING_IPC,3,(void *)L"x"};VERIFY(!wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&invalid));
     wchar_t loadpath[]=L"C:\\test.hidrec";COPYDATASTRUCT data={RECORDING_IPC,sizeof loadpath,loadpath};VERIFY(!wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data));
     g.armed=0;VERIFY(wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data)&&!wcscmp(replay.path,loadpath)&&!g.armed);
+
+    /* Hold to repeat greys out its button, source and speed (values kept),
+     * from the first open on; Cancel closes like the title-bar close. */
+    char text[64];
+    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
+    g.cfg.repeat_enabled=0;g.cfg.repeat_button=2;g.cfg.repeat_cps=12;g.cfg.repeat_sources=4;
+    options=CreateWindowExA(0,wc.lpszClassName,"Repeat fixture",0,0,0,470,540,NULL,NULL,g.inst,NULL);
+    g.options=options;VERIFY(options!=NULL);
+    VERIFY(!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
+    VERIFY(IsWindowEnabled(g.click_cps)&&IsWindowEnabled(g.route)&&!IsWindowEnabled(g.pointer_route));
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    VERIFY(g.options_repeat&&IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_cps));
+    VERIFY(SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
+    SendMessageA(g.route,CB_SETCURSEL,1,0);
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_ROUTE,CBN_SELCHANGE),(LPARAM)g.route);
+    VERIFY(!IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_cps));
+    SendMessageA(g.route,CB_SETCURSEL,0,0);
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_ROUTE,CBN_SELCHANGE),(LPARAM)g.route);
+    VERIFY(IsWindowEnabled(g.repeat_source));
+    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    VERIFY(!g.options_repeat&&!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
+    GetWindowTextA(g.repeat_cps,text,sizeof text);
+    VERIFY(!strcmp(text,"12")&&SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
+    before=g.cfg;fixture_saves=0;
+    options_proc(options,WM_COMMAND,MAKEWPARAM(IDCANCEL,BN_CLICKED),0);
+    VERIFY(!IsWindow(options)&&!g.options&&!fixture_saves&&!memcmp(&before,&g.cfg,sizeof before));
+    g.cfg.repeat_enabled=1;
+    options=CreateWindowExA(0,wc.lpszClassName,"Repeat fixture",0,0,0,470,540,NULL,NULL,g.inst,NULL);
+    g.options=options;VERIFY(options!=NULL&&g.options_repeat);
+    VERIFY(IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_cps));
+    before=g.cfg;
+    options_proc(options,WM_CLOSE,0,0);
+    VERIFY(!IsWindow(options)&&!fixture_saves&&!memcmp(&before,&g.cfg,sizeof before));
+
+    /* Compact view hides RECENT INPUT and the settings fields without touching
+     * their values, keeps ARM / PANIC / Pico on this PC visible with their own
+     * enable rules (also while ARMED), never disarms, and saves only the choice. */
+    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
+    strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
+    WNDCLASSA hud={0};hud.lpfnWndProc=DefWindowProcA;hud.hInstance=g.inst;hud.lpszClassName="HIDwayHudFixture";
+    VERIFY(RegisterClassA(&hud)!=0);
+    g.hwnd=CreateWindowExA(0,hud.lpszClassName,"HUD fixture",WIN_STYLE,0,0,200,200,NULL,NULL,g.inst,NULL);
+    VERIFY(g.hwnd!=NULL&&!IsWindowVisible(g.hwnd));
+    create_fonts();compute_layout();create_controls(g.hwnd);
+    HWND hidden[]={g.history,g.clear,g.save,g.edit[0],g.edit[1],g.edit[2],g.edit[3],
+                   g.cb[0],g.cb[1],g.cb[2],g.src[0],g.src[1],g.src[2]};
+    HWND kept[]={g.arm,g.panic,g.local_pico_button,g.options_button,g.monitor_button,g.replay_button,
+                 g.compact_button,g.updates_button};
+    const size_t n_hidden=sizeof hidden/sizeof hidden[0],n_kept=sizeof kept/sizeof kept[0];
+    for(size_t i=0;i<n_hidden;i++)VERIFY(shown(hidden[i]));
+    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
+    VERIFY(!g.compact&&g.L.H==S(LAYOUT_FULL_H)&&GetDlgCtrlID(g.compact_button)==ID_COMPACT);
+    GetWindowTextA(g.options_button,text,sizeof text);VERIFY(!strcmp(text,"Remote PC..."));
+    GetWindowTextA(g.compact_button,text,sizeof text);VERIFY(!strcmp(text,"Less"));
+    SetWindowTextA(g.edit[0],"192.0.2.99");SetWindowTextA(g.edit[2],"500");
+    SendMessageA(g.history,LB_ADDSTRING,0,(LPARAM)"12:00:00.000\x1fW\x1f" "d");
+    hidway_config_t settings=g.cfg;fixture_saves=0;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
+    VERIFY(g.compact&&g.cfg.compact&&fixture_saves==1&&fixture_saved.compact==1);
+    settings.compact=1;VERIFY(!memcmp(&settings,&g.cfg,sizeof settings)); /* edits are not applied */
+    for(size_t i=0;i<n_hidden;i++)VERIFY(!shown(hidden[i]));
+    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
+    VERIFY(IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic)&&IsWindowEnabled(g.local_pico_button));
+    VERIFY(g.L.H==S(LAYOUT_COMPACT_H)&&g.L.arm.bottom<g.L.H&&g.L.panic.bottom<g.L.H&&g.L.local_pico.bottom<g.L.H);
+    VERIFY(g.L.settings.bottom<=g.L.arm.top&&g.L.live.bottom<=g.L.settings.top);
+    GetWindowTextA(g.compact_button,text,sizeof text);VERIFY(!strcmp(text,"More"));
+    GetWindowTextA(g.edit[0],text,sizeof text);VERIFY(!strcmp(text,"192.0.2.99"));
+    GetWindowTextA(g.edit[2],text,sizeof text);VERIFY(!strcmp(text,"500"));
+    VERIFY(SendMessageA(g.history,LB_GETCOUNT,0,0)==1&&g.cfg.relay_keyboard&&g.cfg.source_virtual);
+    g.preview=1; /* ARMED in the harness: no hooks or sender thread */
+    set_armed(1);VERIFY(g.armed&&!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
+    VERIFY(g.armed&&!g.compact&&!g.cfg.compact);
+    for(size_t i=0;i<n_hidden;i++)VERIFY(shown(hidden[i]));
+    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
+    VERIFY(!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
+    VERIFY(g.armed&&g.compact);
+    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
+    VERIFY(!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PANIC,BN_CLICKED),(LPARAM)g.panic);
+    VERIFY(!g.armed&&g.compact&&IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm));
+    GetWindowTextA(g.edit[0],text,sizeof text);VERIFY(!strcmp(text,"192.0.2.99"));
+    /* Start-up fallback: compact when the full window does not fit, without
+     * changing (or saving) the saved preference. */
+    g.cfg.compact=0;fixture_saves=0;
+    HMONITOR monitor=MonitorFromWindow(g.hwnd,MONITOR_DEFAULTTONEAREST);
+    g.preview_work_h=300;VERIFY(want_compact(monitor));
+    g.preview_work_h=5000;VERIFY(!want_compact(monitor));
+    g.cfg.compact=1;VERIFY(want_compact(monitor));g.cfg.compact=0;
+    g.preview_work_h=0;
+    set_compact(0,0);VERIFY(!g.compact&&shown(g.save));
+    set_compact(1,0);VERIFY(g.compact&&!g.cfg.compact&&!fixture_saves&&!shown(g.save));
+    DestroyWindow(g.hwnd);g.hwnd=NULL;destroy_fonts();
     printf("Client regression tests: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

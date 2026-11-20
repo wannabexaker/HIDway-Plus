@@ -29,7 +29,12 @@ not identify applications or correlate every possible driver.
 
 ## Input options
 
-Open **Input options** beside Save. Opening it disarms; close it before ARM.
+Open **Input options** with the route button in the SETTINGS row: it shows the
+route in use, **Remote PC...** or **Gaming PC...**. Opening it disarms; close it
+before ARM. **Apply and save** stores the choices; **Cancel**, Esc or the
+title-bar close leave everything as it was. Button, Repeat source and Repeat
+clicks/sec are greyed out, with their values kept, while **Hold to repeat** is
+not ticked.
 
 **Pico on this PC**, beside ARM on the main window, is a one-click preset for
 the Gaming PC with Pico USB

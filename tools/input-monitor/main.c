@@ -14,7 +14,12 @@
 #include <string.h>
 enum { ID_LIST=100,ID_PAUSE,ID_RESET,ID_REFRESH,ID_IDENTIFY,ID_BACKGROUND,ID_OBSERVER,ID_NAME,ID_SOURCE,ID_SAVE,ID_RECORD,ID_STOP,ID_REPLAY,ID_SCOPE,ID_FOLDER,ID_CLIENT,ID_UPDATES };
 static HWND client_button,updates_button;
-static HWND record_button,stop_button,replay_button,scope_combo,folder_button,event_text;
+static HWND record_button,stop_button,replay_button,scope_combo,folder_button,event_text,event_caption;
+/* Record… starts a recording: a restrained red, as the client's PANIC tint. */
+#define C_REC      RGB(64,31,34)
+#define C_REC_H    RGB(82,37,41)
+#define C_REC_BD   RGB(140,58,64)
+#define C_REC_TX   RGB(255,154,146)
 static ULONGLONG record_started;static int recording,closing,record_scope,record_device;
 static int record_limit,record_error,observer_for_record;
 static im_device injected_devices[2];
@@ -72,6 +77,11 @@ static void draw_control(const DRAWITEMSTRUCT *d)
             MoveToEx(dc,box.left+px(3),box.top+px(8),NULL);LineTo(dc,box.left+px(6),box.top+px(11));LineTo(dc,box.left+px(13),box.top+px(4));SelectObject(dc,oldp);DeleteObject(pen);
         }
         r.left=box.right+px(8);
+    }else if(d->CtlID==ID_RECORD&&!disabled) { /* idle Record…: the start of a recording */
+        HBRUSH brush=CreateSolidBrush((d->itemState&ODS_SELECTED)?C_REC_H:C_REC);HPEN pen=CreatePen(PS_SOLID,1,C_REC_BD);
+        HGDIOBJ oldb=SelectObject(dc,brush),oldp=SelectObject(dc,pen);
+        RoundRect(dc,r.left,r.top,r.right,r.bottom,px(8),px(8));SelectObject(dc,oldb);SelectObject(dc,oldp);DeleteObject(brush);DeleteObject(pen);
+        SetTextColor(dc,C_REC_TX);
     }else {
         HBRUSH brush=CreateSolidBrush((d->itemState&ODS_SELECTED)?C_SEC_H:C_SEC);HPEN pen=CreatePen(PS_SOLID,1,C_SEC_BD);
         HGDIOBJ oldb=SelectObject(dc,brush),oldp=SelectObject(dc,pen);
@@ -109,10 +119,10 @@ static void layout(void)
     move(identify_button,x,px(88),px(112),bh);x+=px(112)+px(24);
     move(background_box,x,px(88),w-x-p,bh);
     move(observer_box,p,px(128),px(256),px(32));move(observer_text,px(296),px(124),w-p-px(296),px(40));
-    move(record_button,p,px(168),px(96),bh);move(stop_button,p+px(104),px(168),px(80),bh);
-    move(replay_button,p+px(192),px(168),px(152),bh);move(folder_button,p+px(352),px(168),px(120),bh);
-    move(scope_combo,p+px(488),px(168),w-2*p-px(488),px(200));
-    move(event_text,p,px(208),w-2*p,px(40));
+    move(record_button,p,px(168),px(96),bh);move(stop_button,p+px(104),px(168),px(104),bh);
+    move(replay_button,p+px(216),px(168),px(152),bh);move(folder_button,p+px(376),px(168),px(144),bh);
+    move(scope_combo,p+px(528),px(168),w-2*p-px(528),px(200));
+    move(event_caption,p,px(208),px(80),px(24));move(event_text,p+px(88),px(208),w-2*p-px(88),px(40));
     int table_y=px(256),table_h=h-table_y-px(264);if(table_h<px(100))table_h=px(100);
     move(list,p,table_y,w-2*p,table_h);
     int y=table_y+table_h+px(12);
@@ -291,7 +301,7 @@ static void refresh_view(void)
     else SetWindowTextW(window,ui_preview?L"HIDway - Input monitor (UI preview)":L"HIDway - Input monitor");
     static int previous_state;
     if(state!=previous_state){if(state==3)set_note(im_record_count()?L"Saved .hidrec and readable .hidrec.csv. Replay loads into HIDway for confirmation.":L"Saved an empty log; no events were observed. Try Raw Input versus Injected flags scope before recording again.");if(state==-1)set_note(L"Recording failed. Retain .partial files for diagnosis; do not use them for replay.");previous_state=state;}
-    SetWindowTextW(event_text,last_event[0]?last_event:L"Last input: press a key, mouse button or rotate the wheel to inspect its identity.");
+    SetWindowTextW(event_text,last_event[0]?last_event:L"Press a key, mouse button or rotate the wheel to inspect its identity.");
     if(closing&&state!=1&&state!=2){DestroyWindow(window);return;}
     for(int i=0;i<IM_MAX_DEVICES;i++)if(devices[i].used) {
         im_device *d=&devices[i];connected+=d->connected&&d->handle!=NULL;feeds+=d->connected&&d->handle==NULL;
@@ -370,7 +380,7 @@ static void create_controls(void)
     scope_combo=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|CBS_OWNERDRAWFIXED|CBS_HASSTRINGS|WS_VSCROLL|WS_TABSTOP,ID_SCOPE);
     const wchar_t *scopes[]={L"Record all Raw Input devices",L"Record selected device only",L"Record Pico devices only",L"Record injected flags only (separate view)"};
     for(unsigned i=0;i<4;i++)SendMessageW(scope_combo,CB_ADDSTRING,0,(LPARAM)scopes[i]);SendMessageW(scope_combo,CB_SETCURSEL,0,0);
-    event_text=control(L"STATIC",L"",0,0);
+    event_caption=control(L"STATIC",L"Last event",0,0);event_text=control(L"STATIC",L"",0,0);
     list=control(WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP,ID_LIST);
     ListView_SetExtendedListViewStyle(list,LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER|LVS_EX_LABELTIP);
     ListView_SetBkColor(list,C_CARD);ListView_SetTextBkColor(list,C_CARD);ListView_SetTextColor(list,C_TEXT);SetWindowTheme(list,L"DarkMode_Explorer",NULL);
@@ -460,7 +470,7 @@ static LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l)
     case WM_DRAWITEM:draw_control((const DRAWITEMSTRUCT *)l);return TRUE;
     case WM_MEASUREITEM:((MEASUREITEMSTRUCT *)l)->itemHeight=(UINT)px(24);return TRUE;
     case WM_CTLCOLOREDIT:case WM_CTLCOLORLISTBOX:SetTextColor((HDC)w,C_TEXT);SetBkColor((HDC)w,C_FIELD);return (LRESULT)field_brush;
-    case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:SetTextColor((HDC)w,(HWND)l==title||(HWND)l==selection_title?C_TEXT:C_TEXT2);SetBkColor((HDC)w,C_BG);return (LRESULT)background_brush;
+    case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:SetTextColor((HDC)w,(HWND)l==title||(HWND)l==selection_title?C_TEXT:(HWND)l==event_caption?C_TEXT3:C_TEXT2);SetBkColor((HDC)w,C_BG);return (LRESULT)background_brush;
     case WM_KEYDOWN:case WM_SYSKEYDOWN:if(!paused&&!(l&(1L<<30)))legacy_kd++;return 0;
     case WM_KEYUP:case WM_SYSKEYUP:if(!paused)legacy_ku++;return 0;
     case WM_LBUTTONDOWN:case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:case WM_XBUTTONDOWN:if(!paused)legacy_md++;return 0;

@@ -64,6 +64,34 @@ int main(int argc, char **argv)
     hidway_config_load(path, &d);
     CHECK(d.loopback_mode == 1 && d.repeat_cps == 25 && d.repeat_button == 0 &&
           d.repeat_sources == 1);
+    /* compact: default off (also for files written before the key existed),
+     * round-trips, and accepts the usual spellings. */
+    CHECK(!c.compact && !d.compact);
+    c.compact = 1;
+    CHECK(hidway_config_save(path, &c));
+    CHECK(hidway_config_load(path, &d) && d.compact == 1);
+    c.compact = 0;
+    CHECK(hidway_config_save(path, &c));
+    CHECK(hidway_config_load(path, &d) && d.compact == 0);
+    static const struct { const char *text; int value; } flags[] = {
+        {"compact=1\n", 1},         {"compact = 0\n", 0},     {"compact = 7   # note\n", 1},
+        {"compact = YES\n", 1},     {"compact=True\n", 1},    {"compact = on\r\n", 1},
+        {"compact = off\n", 0},     {"compact = \n", 0},      {"compact = maybe\n", 0},
+        {"  compact\t=\t1\n", 1},   {"# compact = 1\n", 0},   {"compactness = 1\n", 0},
+    };
+    for (size_t i = 0; i < sizeof flags / sizeof flags[0]; i++) {
+        f = fopen(path, "w");
+        CHECK(f != NULL);
+        if (!f)
+            continue;
+        fputs(flags[i].text, f);
+        fclose(f);
+        memset(&d, 0xcc, sizeof d);
+        hidway_config_load(path, &d);
+        if (d.compact != flags[i].value)
+            printf("compact parse: \"%s\" -> %d\n", flags[i].text, d.compact);
+        CHECK(d.compact == flags[i].value);
+    }
     DeleteFileA(path);
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = proc;

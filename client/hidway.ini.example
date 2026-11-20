@@ -45,6 +45,11 @@ panic_hotkey = ctrl+alt+shift+end
 # 1 = always shown, 0 = shown only while armed.
 badge = 1
 
+# Compact main window: hides the recent-input list and the settings fields
+# (Less / More in the SETTINGS row). 0 = full window. HIDway also starts
+# compact, without changing this value, when the full window does not fit.
+compact = 0
+
 # Prevent the default HIDway Pico USB mouse from being captured again when
 # the Pico is plugged into this same PC. Change this if firmware VID/PID were
 # overridden at build time.
