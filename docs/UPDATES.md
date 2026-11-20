@@ -216,6 +216,9 @@ The repository guard prevents an accidental release from any other repository.
   writes it to `VERSION`, and the updater compares it numerically.
 - Small changes are patch releases (`v0.6.1`, `v0.6.2`, ...). The middle or
   the first number changes only for large changes (the owner's rule).
+- `CHANGELOG.md` carries the same number: its newest section is written
+  before the tag, and the release workflow refuses a tag that does not match
+  it.
 - Numbers continue from the earlier repository, whose last release was
   `v0.3.0`. The first release from this repository is `v0.4.0`. Never reuse or
   move a published tag; fix a release by publishing the next number.

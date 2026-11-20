@@ -46,6 +46,10 @@ jobs:
           [[ $(git cat-file -t "refs/tags/$TAG") == tag ]] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
           git merge-base --is-ancestor "refs/tags/$TAG^{commit}" origin/main ||
             { echo "::error::$TAG is not on main"; exit 1; }
+          # One version number: the newest section of CHANGELOG.md is this tag.
+          top=$(git show "refs/tags/$TAG^{commit}:CHANGELOG.md" | grep -m1 -oE '^## v[0-9]+\.[0-9]+\.[0-9]+' | cut -c4- || true)
+          [[ $top == "$TAG" ]] ||
+            { echo "::error::CHANGELOG.md starts with '${top:-no version}', not $TAG. Add the $TAG section before tagging."; exit 1; }
 
   build:
     needs: verify
