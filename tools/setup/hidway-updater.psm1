@@ -3,7 +3,7 @@
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 Set-Variable -Name Owner -Value 'wannabexaker' -Option Constant -Scope Script
-Set-Variable -Name Repo -Value 'HIDway' -Option Constant -Scope Script
+Set-Variable -Name Repo -Value 'HIDway-' -Option Constant -Scope Script
 $script:Limit = 128MB
 
 function Get-HidwayUpdateSource {
@@ -35,7 +35,7 @@ function Assert-HidwayLocalPath([string]$Path) {
         if ($protected -and $full -eq [IO.Path]::GetFullPath($protected).TrimEnd('\')) { throw 'Choose a dedicated application subfolder.' }
     }
     for ($part = $full; $part; $part = [IO.Path]::GetDirectoryName($part)) {
-        if ((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Junctions and symbolic links are not allowed in update paths.' }
+        if ((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { if (@('Junction','SymbolicLink') -contains [string](Get-Item -LiteralPath $part -Force).LinkType) { throw 'Junctions and symbolic links are not allowed in update paths.' } else { throw 'HIDway does not work from a OneDrive or other cloud-synced folder (sync and Files On-Demand are not supported). Use a normal local folder outside OneDrive, for example C:\HIDway.' } }
     }
     return $full
 }

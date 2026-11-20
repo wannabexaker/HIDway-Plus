@@ -98,7 +98,8 @@ PC, updates the Pi, flashes firmware, or enables ARM.
 
 The standalone engine is `tools/setup/hidway-updater.psm1`, with the PowerShell
 5.1 WPF front end `hidway-updates.ps1`. Both are ASCII and use only Windows/.NET.
-The single immutable Owner/Repo pair pins requests to **wannabexaker/HIDway**.
+The single immutable Owner/Repo pair pins requests to **wannabexaker/HIDway-**,
+the repository this source is published from.
 There is no repository/URL override, account, token, telemetry, background update
 timer or retry loop. API redirects to another repository are refused. GitHub's
 own release-storage redirects are allowed for the already validated asset only.
@@ -127,12 +128,14 @@ then publishes. It refuses to replace an existing release. Publication uses
 GitHub Actions' short-lived built-in token; Windows users supply no credentials.
 See [the full update guide](docs/UPDATES.md) for tests and interrupted-update recovery.
 
-**Repository migration:** this checkout's existing remote was `HIDway-` when
-this updater was implemented. The updater intentionally uses `HIDway` exactly;
-the workflow refuses publication from the old remote. Review and transfer the
-changes to the intended repository before tagging; the updater has no fallback.
-The live `v0.3.0` ZIP predates the payload manifest and is safely rejected. Publish
-a new release with this workflow to provide the new installable package format.
+**One repository:** since 2026-11-20 the application, the updater, the setup
+wizard's Pi step and the release workflow all use `wannabexaker/HIDway-`. The
+earlier `wannabexaker/HIDway` repository holds the older code and its releases
+up to `v0.3.0`; it is not consulted and the workflow refuses publication from
+any repository other than the pinned one. No release exists here yet, so
+**Check** reports that none is published. Version numbers continue from the
+earlier line: the first release from this repository is `v0.4.0`. See
+[versioning](docs/UPDATES.md#versioning).
 
 ## Usage
 

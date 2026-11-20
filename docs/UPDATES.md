@@ -36,7 +36,8 @@ installs, process kills, Windows notification popups or scheduled retries.
 `hidway-update-core.ps1` imports the module; the module does not import the
 setup core or any external module.
 
-The only Owner/Repo pair is the module's script-constant `wannabexaker` / `HIDway`.
+The only Owner/Repo pair is the module's script-constant `wannabexaker` / `HIDway-`,
+the repository the application is published from.
 All project API/download URLs are derived from it. Neither GUI nor module APIs
 accept another URL, owner, repository or credentials. API redirects are rejected,
 including repository-renaming redirects. Asset redirects are limited to HTTPS
@@ -64,9 +65,11 @@ it never means up to date. HTTP 403/429 reports rate limiting/access restriction
 Network, HTTP and malformed-metadata failures are non-fatal check results. There
 is no retry loop or authentication fallback.
 
-The existing public v0.3.0 archive was checked on 2026-11-06: its outer size/hash
-passed, but it predates PAYLOAD.sha256 and the self-update files. It is correctly
-refused. A new workflow-produced release is needed for end-to-end public install.
+The pinned repository has no published release yet, so **Check** reports that
+none is available. A workflow-produced release is needed for an end-to-end
+public install. The `v0.3.0` archive in the earlier `wannabexaker/HIDway`
+repository predates PAYLOAD.sha256 and the self-update files; it was refused
+when checked on 2026-11-06 and is no longer consulted.
 
 ## Local transaction and recovery
 
@@ -122,10 +125,28 @@ A failed upload/digest check leaves a draft for maintainer inspection. Never
 replace published update assets; use a new version. The built-in, short-lived
 GitHub Actions token is used only for publication. No user PAT/secrets are needed.
 
-This checkout historically used the remote name HIDway-. The new updater is
-pinned to HIDway as requested. The repository guard deliberately prevents an
-accidental release from the old repository; Git remotes were not changed by
-this implementation.
+On 2026-11-20 the owner decided that updates come from the same repository as
+the application. The pin moved from `HIDway` to `HIDway-`, matching this
+checkout's remote, the setup wizard's Pi step and the README. The repository
+guard prevents an accidental release from any other repository.
+
+## Versioning
+
+- A stable release is an annotated `vX.Y.Z` tag on `main` of the pinned
+  repository. The tag is the version: CI passes it to the build, the package
+  writes it to `VERSION`, and the updater compares it numerically.
+- Numbers continue from the earlier repository, whose last release was
+  `v0.3.0`. The first release from this repository is `v0.4.0`. Never reuse or
+  move a published tag; fix a release by publishing the next number.
+- Between releases, `git describe` names a build `vX.Y.Z-N-g<hash>`. Until the
+  first tag exists here it is a bare commit hash.
+- Hand-built preview packages carry a descriptive label such as
+  `same-pc-preview-2026.10.30`. A label is not comparable with a release, so
+  the updater shows it as a preview and asks before installing a stable
+  release over it. It never treats a preview as up to date.
+- The Raspberry Pi relay follows the same tags once `HIDWAY_REF=latest-tag` is
+  set (see [relay operations](RELAY.md)). Until the first tag is published the
+  setup wizard installs the relay from `main`.
 
 ## Tests and trust
 

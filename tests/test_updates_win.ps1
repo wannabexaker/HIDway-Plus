@@ -8,10 +8,10 @@ $base=Join-Path ([IO.Path]::GetFullPath($Work)) ([guid]::NewGuid().ToString('N')
 $null=[IO.Directory]::CreateDirectory($base)
 function Release {
  [pscustomobject]@{tag_name='v1.2.3';draft=$false;prerelease=$false;assets=@([pscustomobject]@{
-  name='HIDway-v1.2.3-windows.zip';browser_download_url='https://github.com/wannabexaker/HIDway/releases/download/v1.2.3/HIDway-v1.2.3-windows.zip'
+  name='HIDway-v1.2.3-windows.zip';browser_download_url=((Get-HidwayUpdateSource).Web+'/releases/download/v1.2.3/HIDway-v1.2.3-windows.zip')
   state='uploaded';size=12;digest=('sha256:'+('0'*64))})}
 }
-Check ((Get-HidwayUpdateSource).Repo -ceq 'HIDway') 'exact repository without trailing hyphen'
+Check ((Get-HidwayUpdateSource).Repo -ceq 'HIDway-') 'exact repository with trailing hyphen'
 Check ((Get-HidwayReleaseOffer 'v1.0.0' (Release)).State -eq 'Available') 'newer stable'
 Check ((Get-HidwayReleaseOffer '1.2.3' (Release)).State -eq 'Current') 'installed semver without v prefix'
 Check ((Get-HidwayReleaseOffer 'v2.0.0' (Release)).State -eq 'Older') 'downgrade not offered'
@@ -23,7 +23,7 @@ $r=Release;$r.tag_name='v1.2.3-rc1';Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 
 $r=Release;$r.assets[0].digest='sha256:'+('A'*64);Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'uppercase digest rejected'
 $r=Release;$r.assets[0].size=1;Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'one byte rejected'
 $r=Release;$r.assets[0].size=134217729;Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'oversized rejected'
-$r=Release;$r.assets[0].browser_download_url=$r.assets[0].browser_download_url.Replace('/HIDway/','/HIDway-/');Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'legacy wrong repository rejected'
+$r=Release;$r.assets[0].browser_download_url=$r.assets[0].browser_download_url.Replace('/'+(Get-HidwayUpdateSource).Repo+'/','/HIDway/');Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'legacy wrong repository rejected'
 $r=Release;$r.assets+=@($r.assets[0]);Reject {Get-HidwayReleaseOffer 'v1.0.0' $r} 'duplicate asset rejected'
 # Mock only the private HTTP boundary, never application files or transactions.
 & $module {
