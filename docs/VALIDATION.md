@@ -24,8 +24,17 @@ real release:
 
 Two defects found by this run were corrected afterwards: the updater did not
 update the version shown in Windows Installed apps, and a folder in use was
-reported as a raw rename error with a recovery journal left behind. Neither PC
-ran ARM during these steps; the client stayed closed on the Gaming PC.
+reported as a raw rename error with a recovery journal left behind. They were
+published as `v0.4.1`, which gave a real update between two stable releases:
+on the Gaming PC the installed `v0.4.0` updater reported "A newer stable
+release is available", downloaded, verified and installed `v0.4.1`, kept
+`hidway.ini` unchanged and `v0.4.0` as the rollback, and then reported "Up to
+date"; the new updater corrected the Installed apps entry, which still showed
+the preview label. The laptop checked and downloaded `v0.4.1` through its
+updater and applied the verified package file by file, for the same reason as
+before. Rollback itself and the new folder-in-use message were exercised by
+the automated tests only. Neither PC ran ARM during these steps; the client
+stayed closed on the Gaming PC.
 
 ## Installer fixes and window layout (2026-11-20)
 
