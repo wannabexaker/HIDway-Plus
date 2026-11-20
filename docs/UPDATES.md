@@ -119,8 +119,12 @@ Windows Client/Probe/companions, runs tests and validates both WPF entry points.
 `tools/ci/package.sh` includes the updater and creates the ZIP, internal manifest
 and SHA256SUMS. Tagged Windows builds receive the exact tag as HIDWAY_VERSION.
 
-After CI succeeds, publication uploads a draft, verifies that GitHub reports
-one correctly named ZIP with the expected URL, size and digest, then publishes.
+After CI succeeds, publication uploads a draft and verifies that GitHub reports
+one correctly named ZIP, uploaded, with the expected size and digest. GitHub
+does not return a draft from "get a release by tag" and gives a draft's assets
+provisional `untagged-...` download URLs, so the draft is read from the release
+list and the download URL is checked only after publishing; if the published
+release does not match what the updater requires it is returned to draft.
 A failed upload/digest check leaves a draft for maintainer inspection. Never
 replace published update assets; use a new version. The built-in, short-lived
 GitHub Actions token is used only for publication. No user PAT/secrets are needed.

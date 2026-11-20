@@ -94,23 +94,53 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::Release already exists. Publish a new version instead of replacing update assets."
             exit 1
-          else
-            gh release create "$TAG" release/* --draft --verify-tag --title "${title:-HIDway $TAG}" --notes-file notes.md
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >release-metadata.json
-            export EXPECTED_SHA256
-            EXPECTED_SHA256=$(sha256sum "release/HIDway-$TAG-windows.zip" | cut -d' ' -f1)
-            python3 - <<'PY'
-          import json, os
+          fi
+          export EXPECTED_SHA256
+          EXPECTED_SHA256=$(sha256sum "release/HIDway-$TAG-windows.zip" | cut -d' ' -f1)
+          # GitHub does not return a draft from "get a release by tag", and a
+          # draft's asset URLs are provisional (.../download/untagged-<id>/...).
+          # So the draft is read from the release list and checked for name,
+          # state, size and digest; the final download URL is checked after
+          # publishing, and a mismatch returns the release to draft.
+          cat >check_release.py <<'PY'
+          import json, os, sys
+          phase, path = sys.argv[1], sys.argv[2]  # draft <release list> | published <release>
           tag = os.environ['TAG']
           name = f'HIDway-{tag}-windows.zip'
-          release = json.load(open('release-metadata.json', encoding='utf-8'))
+          data = json.load(open(path, encoding='utf-8'))
+          if phase == 'draft':
+              found = [r for r in data if r['draft'] and r['tag_name'] == tag]
+              assert len(found) == 1, 'Expected exactly one draft release for this tag'
+              release = found[0]
+          else:
+              release = data
+              assert release['tag_name'] == tag, 'Wrong tag'
+              assert not release['draft'] and not release['prerelease'], 'Not a published stable release'
           assets = [a for a in release['assets'] if a['name'] == name]
           assert len(assets) == 1, 'Expected exactly one Windows ZIP'
           asset = assets[0]
-          expected_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}"
-          assert asset['browser_download_url'] == expected_url, 'Wrong download URL'
           assert asset['state'] == 'uploaded' and 1 < asset['size'] <= 128 * 1024 * 1024, 'Invalid asset state or size'
           assert asset['digest'] == 'sha256:' + os.environ['EXPECTED_SHA256'], 'GitHub digest mismatch'
+          if phase == 'published':
+              expected_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}"
+              assert asset['browser_download_url'] == expected_url, 'Wrong download URL'
           PY
-            gh release edit "$TAG" --draft=false
+          gh release create "$TAG" release/* --draft --verify-tag --title "${title:-HIDway $TAG}" --notes-file notes.md
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" >releases.json
+          python3 check_release.py draft releases.json
+          gh release edit "$TAG" --draft=false
+          published=0
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >release-metadata.json 2>/dev/null &&
+               python3 check_release.py published release-metadata.json; then
+              published=1
+              break
+            fi
+            echo "published release not confirmed yet (attempt $attempt)"
+            sleep 3
+          done
+          if [[ $published != 1 ]]; then
+            gh release edit "$TAG" --draft=true || true
+            echo "::error::The published release did not match what the updater requires; it was returned to draft."
+            exit 1
           fi
