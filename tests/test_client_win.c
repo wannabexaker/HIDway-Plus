@@ -6,12 +6,28 @@
 #define hidway_net_peer_is_loopback test_peer_is_loopback
 #define hidway_local_pico_interfaces test_local_pico_interfaces
 #define hidway_config_save test_config_save
+/* No test ever starts PowerShell, the updater or a network request. */
+#define hw_update_check_begin test_update_check_begin
+#define hw_companion_open test_companion_open
 #include "../client/src/main.c"
 #undef hidway_net_send
 #undef hidway_net_recv
 #undef hidway_net_peer_is_loopback
 #undef hidway_local_pico_interfaces
 #undef hidway_config_save
+#undef hw_update_check_begin
+#undef hw_companion_open
+
+static unsigned fixture_checks, fixture_launches;
+static int fixture_launch_target = -1, fixture_launch_result = HW_COMPANION_OK;
+int test_update_check_begin(HWND window, UINT message)
+{
+    (void)window; (void)message; fixture_checks++; return 1;
+}
+int test_companion_open(HWND owner, int target)
+{
+    (void)owner; fixture_launches++; fixture_launch_target = target; return fixture_launch_result;
+}
 
 int hidway_net_peer_is_loopback(void);
 static int fixture_peer,fixture_save_ok=1,fixture_saves;
@@ -956,6 +972,161 @@ int main(void)
     g.pico_pending=1;pico_refresh();VERIFY(fixture_pico_calls==5);g.pico_pending=0; /* never while one runs */
     VERIFY(TIMER_PICO!=TIMER_UI&&PICO_REFRESH_MS>=1000);
     g.preview=1;set_armed(1);VERIFY(g.armed);set_armed(0); /* "Not on this PC" gates nothing */
+
+    /* ---- Start update check: the strict parser of the one result line. ---- */
+    {
+        static const struct { const char *out; int result; const char *tag; } lines[] = {
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1\r\n", HW_UPDATE_AVAILABLE, "v0.6.1"},
+            {"HIDWAY-UPDATE state=Available tag=v10.20.300\n", HW_UPDATE_AVAILABLE, "v10.20.300"},
+            {"HIDWAY-UPDATE state=Available tag=v999999.999999.999999", HW_UPDATE_AVAILABLE, "v999999.999999.999999"},
+            {"HIDWAY-UPDATE state=Current tag=v0.6.0\r\n", HW_UPDATE_SILENT, ""},
+            {"HIDWAY-UPDATE state=None tag=\r\n", HW_UPDATE_SILENT, ""},
+            {"HIDWAY-UPDATE state=Older tag=v0.5.0\r\n", HW_UPDATE_SILENT, ""},
+            {"HIDWAY-UPDATE state=Preview tag=v0.6.1\r\n", HW_UPDATE_SILENT, ""},
+            {"HIDWAY-UPDATE state=Error tag=\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=RateLimited tag=\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1.2\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1-rc1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=V0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v1234567.0.0\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1 \r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1 extra=1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1\t\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v\xef\xbc\x90.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1\r\n\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1\r\nHIDWAY-UPDATE state=Available tag=v0.6.2\r\n", HW_UPDATE_FAILED, ""},
+            {"WARNING: x\r\nHIDWAY-UPDATE state=Available tag=v0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"hidway-update state=Available tag=v0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE  state=Available tag=v0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=available tag=v0.6.1\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available tag=v0.6.1tag=v0.6.2\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Available\r\n", HW_UPDATE_FAILED, ""},
+            {"HIDWAY-UPDATE state=Current tag=garbage\r\n", HW_UPDATE_FAILED, ""},
+            {"", HW_UPDATE_FAILED, ""},
+        };
+        char tag[HW_UPDATE_TAG_MAX];
+        for (size_t i = 0; i < sizeof lines / sizeof lines[0]; i++) {
+            strcpy(tag, "stale");
+            int result = hw_update_parse(lines[i].out, strlen(lines[i].out), tag, sizeof tag);
+            if (result != lines[i].result || strcmp(tag, lines[i].tag))
+                printf("update line %u\n", (unsigned)i);
+            VERIFY(result == lines[i].result && !strcmp(tag, lines[i].tag));
+        }
+        static const char nul_inside[] = "HIDWAY-UPDATE state=Available tag=v0.6.1\0\r\n";
+        VERIFY(hw_update_parse(nul_inside, sizeof nul_inside - 1, tag, sizeof tag) == HW_UPDATE_FAILED && !tag[0]);
+        static char overlong[HW_UPDATE_OUTPUT_MAX + 8];
+        memset(overlong, 'A', sizeof overlong - 1);
+        memcpy(overlong, "HIDWAY-UPDATE state=Available tag=v0.6.1", 40);
+        VERIFY(hw_update_parse(overlong, strlen(overlong), tag, sizeof tag) == HW_UPDATE_FAILED && !tag[0]);
+        char tiny[4];
+        VERIFY(hw_update_parse(lines[0].out, strlen(lines[0].out), tiny, sizeof tiny) == HW_UPDATE_FAILED);
+        VERIFY(hw_update_parse(NULL, 0, tag, sizeof tag) == HW_UPDATE_FAILED);
+        VERIFY(hw_update_tag_valid("v0.6.1") && !hw_update_tag_valid("v0.6.") && !hw_update_tag_valid("") &&
+               !hw_update_tag_valid(NULL) && !hw_update_tag_valid("v.6.1") && !hw_update_tag_valid("v0..1"));
+    }
+
+    /* ---- Update banner: shown only for Available, on every tab, hidden
+     * while armed or replaying, Later until the next start, Update now
+     * only while disarmed. Fixtures only: no PowerShell, updater or network. ---- */
+    {
+        MSG pending;
+        ui_state();fixture_launches=0;fixture_launch_result=HW_COMPANION_OK;
+        g.update_offer=0;g.update_tag[0]=g.update_notice[0]=0;banner_sync();
+        VERIFY(!banner_visible()&&!shown(g.update_now)&&!shown(g.update_later));
+        int listed=(int)SendMessageA(g.history,LB_GETCOUNT,0,0);
+        update_result(HW_UPDATE_SILENT,"");
+        VERIFY(!g.update_offer&&!shown(g.update_now)&&SendMessageA(g.history,LB_GETCOUNT,0,0)==listed);
+        update_result(HW_UPDATE_FAILED,""); /* one quiet line, no banner, no dialog */
+        VERIFY(!g.update_offer&&!shown(g.update_now)&&SendMessageA(g.history,LB_GETCOUNT,0,0)==listed+1);
+        update_result(HW_UPDATE_AVAILABLE,"v0.6");
+        update_result(HW_UPDATE_AVAILABLE,"v0.6.1 now");
+        VERIFY(!g.update_offer&&!shown(g.update_now));
+        wnd_proc(g.hwnd,WM_UPDATE_RESULT,HW_UPDATE_AVAILABLE,0); /* the worker left no valid tag */
+        VERIFY(!g.update_offer);
+        update_result(HW_UPDATE_AVAILABLE,"v0.6.1");
+        VERIFY(g.update_offer==1&&banner_visible()&&shown(g.update_now)&&shown(g.update_later)&&
+               !strcmp(g.update_tag,"v0.6.1")&&!g.armed&&!fixture_launches);
+        for(int t=0;t<TAB_COUNT;t++){select_tab(t);VERIFY(shown(g.update_now)&&shown(g.update_later)&&shown(g.arm));}
+        select_tab(TAB_CONTROL);
+        /* armed: hidden (the timer's banner_sync), and Update now does nothing */
+        set_armed(1);VERIFY(g.armed&&!banner_visible());
+        banner_sync();VERIFY(!shown(g.update_now)&&!shown(g.update_later));
+        g.preview=0;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
+        VERIFY(g.armed&&!fixture_launches&&g.update_offer==1&&!PeekMessageA(&pending,g.hwnd,WM_CLOSE,WM_CLOSE,PM_REMOVE));
+        g.preview=1;set_armed(0);banner_sync();
+        VERIFY(!g.armed&&banner_visible()&&shown(g.update_now)&&shown(g.update_later));
+        /* a replay in progress: hidden and refused as well */
+        replay.active=1;g.preview=0;
+        VERIFY(!banner_visible());
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
+        VERIFY(!fixture_launches&&g.update_offer==1);
+        replay.active=0;banner_sync();VERIFY(shown(g.update_now));
+        /* the launcher cannot be started: HIDway stays open and says so */
+        fixture_launch_result=HW_COMPANION_MISSING;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
+        VERIFY(fixture_launches==1&&fixture_launch_target==HW_COMPANION_UPDATE_NOW&&g.update_offer==1&&
+               strstr(g.update_notice,"did not start")&&shown(g.update_now)&&
+               !PeekMessageA(&pending,g.hwnd,WM_CLOSE,WM_CLOSE,PM_REMOVE));
+        /* started: the banner goes and the window closes the normal way (WM_CLOSE) */
+        fixture_launch_result=HW_COMPANION_OK;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
+        VERIFY(fixture_launches==2&&fixture_launch_target==HW_COMPANION_UPDATE_NOW&&g.update_offer==2&&
+               !shown(g.update_now)&&!shown(g.update_later)&&!g.armed&&
+               PeekMessageA(&pending,g.hwnd,WM_CLOSE,WM_CLOSE,PM_REMOVE));
+        g.preview=1;
+        /* Later: hidden until the next start, also after arm/disarm and another result */
+        g.update_offer=0;g.update_notice[0]=0;update_result(HW_UPDATE_AVAILABLE,"v0.6.1");VERIFY(shown(g.update_later));
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_LATER,BN_CLICKED),(LPARAM)g.update_later);
+        VERIFY(g.update_offer==2&&!banner_visible()&&!shown(g.update_now)&&!shown(g.update_later));
+        set_armed(1);set_armed(0);banner_sync();update_result(HW_UPDATE_AVAILABLE,"v0.6.2");
+        VERIFY(g.update_offer==2&&!shown(g.update_now)&&!strcmp(g.update_tag,"v0.6.1"));
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
+        VERIFY(fixture_launches==2); /* a dismissed banner starts nothing */
+
+        /* Banner geometry at 96/144/192 DPI: inside the header, clear of the
+         * mark, the state pill, the tab strip and the action row; its text
+         * and button labels fit. */
+        HDC dc=GetDC(g.hwnd);
+        for(UINT dpi=96;dpi<=192;dpi+=48) {
+            g.dpi=dpi;create_fonts();compute_layout();
+            RECT x;
+            VERIFY(g.L.banner.left>=g.L.mark.right&&g.L.banner.right<=g.L.pill.left-S(6)&&g.L.banner.bottom<=g.L.tabs.top);
+            VERIFY(!IntersectRect(&x,&g.L.banner,&g.L.pill)&&!IntersectRect(&x,&g.L.banner,&g.L.tabs)&&
+                   !IntersectRect(&x,&g.L.banner,&g.L.arm)&&!IntersectRect(&x,&g.L.banner,&g.L.panic));
+            VERIFY(g.L.banner_now.left>g.L.banner.left&&g.L.banner_now.right<g.L.banner_later.left&&
+                   g.L.banner_later.right==g.L.banner.right&&g.L.banner_now.top==g.L.banner.top);
+            VERIFY(text_w(dc,g.f_label,"HIDway v0.6.1 is available")<=g.L.banner_now.left-S(8)-g.L.banner.left);
+            VERIFY(text_w(dc,g.f_label,"The updater did not start")<=g.L.banner_now.left-S(8)-g.L.banner.left);
+            VERIFY(text_w(dc,g.f_chip,"Update now")+S(10)<=g.L.banner_now.right-g.L.banner_now.left&&
+                   text_w(dc,g.f_chip,"Later")+S(10)<=g.L.banner_later.right-g.L.banner_later.left);
+            VERIFY(font_h(dc,g.f_chip)<=g.L.banner_now.bottom-g.L.banner_now.top);
+        }
+        ReleaseDC(g.hwnd,dc);
+        g.dpi=96;create_fonts();compute_layout();apply_layout();
+
+        /* One check per start; update_check = 0, previews and recording starts start none. */
+        g.update_check_started=0;fixture_checks=0;g.shot_path[0]=0;replay.path[0]=0;g.preview=0;
+        g.cfg.update_check=0;update_check_start();VERIFY(!fixture_checks);
+        g.cfg.update_check=1;update_check_start();update_check_start();VERIFY(fixture_checks==1);
+        g.update_check_started=0;g.preview=1;update_check_start();VERIFY(fixture_checks==1);
+        g.preview=0;wcscpy(replay.path,L"C:\\fixture.hidrec");update_check_start();VERIFY(fixture_checks==1);
+        replay.path[0]=0;g.preview=1;
+        /* An ini from before update_check keeps the check on; 0 turns it off. */
+        char folder[MAX_PATH],ini[MAX_PATH];hidway_config_t loaded;
+        GetTempPathA(MAX_PATH,folder);snprintf(ini,sizeof ini,"%shidway-client-test-%lu.ini",folder,GetCurrentProcessId());
+        FILE *f=fopen(ini,"w");
+        if(f){fputs("target = 192.0.2.1\nport = 47800\nbadge = 0\n",f);fclose(f);}
+        VERIFY(hidway_config_load(ini,&loaded)&&loaded.update_check==1);
+        f=fopen(ini,"w");
+        if(f){fputs("target = 192.0.2.1\nupdate_check = 0\n",f);fclose(f);}
+        VERIFY(hidway_config_load(ini,&loaded)&&loaded.update_check==0);
+        DeleteFileA(ini);
+        g.update_offer=0;banner_sync();
+    }
 
     DestroyWindow(g.hwnd);g.hwnd=NULL;destroy_fonts();
     printf("Client regression tests: %s\n", failures ? "FAIL" : "PASS");

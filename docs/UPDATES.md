@@ -9,7 +9,8 @@ Windows updater.
 
 1. Extract the complete release ZIP. First installation still uses
    `HIDway-Setup.exe`. Run the installed **Check for updates** shortcut, HIDway's
-   **Updates** button, or Monitor's **Check for updates** button.
+   **Updates** button, or Monitor's **Check for updates** button. HIDway also
+   checks once by itself when it opens (see below).
 2. **Check** makes one unauthenticated request to the latest stable GitHub release.
    Installed version comes from `VERSION` beside the local executables. Latest,
    installed and local previous versions appear separately.
@@ -28,6 +29,42 @@ Check/Download/Install/Rollback buttons are disabled when their prerequisites
 are absent or an operation is busy. Errors stay in the window. Closing during
 a file transaction waits for it to finish. There are no automatic downloads,
 installs, process kills, Windows notification popups or scheduled retries.
+
+## The check when HIDway opens
+
+Once per start, after its window is up (always disarmed), HIDway runs
+`hidway-updates.ps1 -Check` from its own folder in the background. That makes
+one unauthenticated request to GitHub for the latest release of the fixed
+repository, the same request as **Check**: GitHub sees the PC's IP address and
+the updater's user agent, nothing else is sent, and nothing is downloaded,
+written or started. The script prints one line,
+`HIDWAY-UPDATE state=<State> tag=<vX.Y.Z or empty>`; the client gives it at
+most 20 seconds and accepts only `state=Available` with a `vX.Y.Z` tag. Any
+other answer, a timeout or a missing script shows nothing (a failed check adds
+one line to the recent list on the Tools tab). The check never delays ARM and
+is skipped in previews and when HIDway is opened to load a recording.
+
+When a newer stable release exists, the line under the title reads
+"HIDway vX.Y.Z is available" with two buttons:
+
+- **Later** hides it until HIDway is opened again. Nothing is remembered.
+- **Update now** (only while disarmed; the line is hidden while armed or
+  replaying) starts `HIDway-Setup.exe --update-now` and closes HIDway the
+  normal way, so its settings are saved as on any exit. The updates window
+  opens, waits up to 30 seconds for HIDway to close, then runs Check,
+  Download and Install by itself, with the same code and checks as the
+  buttons, showing progress in its status text. On success it opens HIDway
+  again (disarmed) and closes. On any refusal or error (another HIDway tool
+  still running, the folder in use, network, digest mismatch, a preview
+  installed) it stops, keeps the window open with the reason and the normal
+  buttons, and starts nothing. A preview is never replaced without the usual
+  explicit confirmation. If the updater cannot be started, HIDway stays open
+  and says so in that line.
+
+To turn the check off, for example on a company network, set
+`update_check = 0` in `hidway.ini` (see `hidway.ini.example`). A file without
+the key keeps the check on. **Updates** on the Tools tab still works when
+clicked.
 
 ## Everything at once
 
@@ -177,6 +214,8 @@ The repository guard prevents an accidental release from any other repository.
 - A stable release is an annotated `vX.Y.Z` tag on `main` of the pinned
   repository. The tag is the version: CI passes it to the build, the package
   writes it to `VERSION`, and the updater compares it numerically.
+- Small changes are patch releases (`v0.6.1`, `v0.6.2`, ...). The middle or
+  the first number changes only for large changes (the owner's rule).
 - Numbers continue from the earlier repository, whose last release was
   `v0.3.0`. The first release from this repository is `v0.4.0`. Never reuse or
   move a published tag; fix a release by publishing the next number.
@@ -202,7 +241,12 @@ The updater test mocks its HTTP boundary and process inventory, while using
 real isolated archives, hashes, version files, directory swaps and rollback.
 It covers 404, rate limits, network failure, prereleases, invalid metadata,
 hash mismatch, downgrade refusal, running-instance refusal, preview consent,
-INI preservation, failed-swap recovery and checkpoint tampering. Live tools
+INI preservation, failed-swap recovery and checkpoint tampering. It also runs
+`hidway-updates.ps1 -Check` (the exact line for Available, Current, Error and
+RateLimited) and `-AutoInstall` (install and report; refusal, preview and
+network error leaving the copy untouched) as separate processes against a
+copied installation, with the same mocks passed through the test-only
+`-TestHook` switch, under which the client is never started. Live tools
 and actual application ownership mutexes are not used by those tests.
 
 HTTPS, a fixed repository and SHA-256 bind the download to the trusted release

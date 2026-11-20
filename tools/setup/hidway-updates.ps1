@@ -1,8 +1,42 @@
 #requires -Version 5.1
-param([switch]$ValidateOnly,[string]$RenderPath)
+# -Check: no window; one line "HIDWAY-UPDATE state=<State> tag=<vX.Y.Z or empty>" for the client's start check.
+# -AutoInstall: the normal window, which waits for HIDway to close and then checks, downloads and installs by itself.
+# -TestHook: tests only; a file of mock functions applied after each module import, and the client is not started.
+param([switch]$ValidateOnly,[string]$RenderPath,[switch]$Check,[switch]$AutoInstall,[string]$TestHook)
 $ErrorActionPreference='Stop'
+$hookCode=''
+if($TestHook){$TestHook=[IO.Path]::GetFullPath($TestHook);if(!(Test-Path -LiteralPath $TestHook -PathType Leaf)){throw 'Test hook file not found.'};$hookCode=[IO.File]::ReadAllText($TestHook)}
+function Import-HidwayUpdater {
+ Import-Module (Join-Path $PSScriptRoot 'hidway-updater.psm1') -Force -WarningAction SilentlyContinue
+ if($hookCode){& (Get-Module hidway-updater) ([scriptblock]::Create($hookCode))}
+}
+if($hookCode){. ([scriptblock]::Create($hookCode))} # the same mocks for this script's own process checks
+function Get-HidwayDestination {
+ if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hidway-client.exe')){return $PSScriptRoot}
+ $registration=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HIDway' -ErrorAction SilentlyContinue
+ if($registration -and $registration.PSObject.Properties['InstallLocation']){return [string]$registration.InstallLocation}
+ return ''
+}
+if($Check){
+ # Read-only: one request for the latest release; nothing is downloaded, written or started.
+ $WarningPreference='SilentlyContinue';$ProgressPreference='SilentlyContinue'
+ $state='Error';$tag=''
+ try{
+  Import-HidwayUpdater
+  $installed='unknown';$folder=Get-HidwayDestination
+  if($folder){$installed=Get-HidwayInstalledVersion $folder}
+  $answer=Get-HidwayLatestUpdate $installed
+  $state=[string]$answer.State
+  if($answer.PSObject.Properties['Tag'] -and ([string]$answer.Tag).Length -le 128 -and [string]$answer.Tag -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+$'){$tag=[string]$answer.Tag}
+ }catch{$state='Error'}
+ if($state -cnotin @('Available','Current','Preview','Older','None','RateLimited','Error')){$state='Error'}
+ if($state -ceq 'Available' -and !$tag){$state='Error'}
+ if($state -cin @('None','RateLimited','Error')){$tag=''}
+ [Console]::Out.Write("HIDWAY-UPDATE state=$state tag=$tag`r`n");[Console]::Out.Flush()
+ exit 0
+}
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
-Import-Module (Join-Path $PSScriptRoot 'hidway-updater.psm1') -Force
+Import-HidwayUpdater
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -11,12 +45,7 @@ public static class HidwayUpdateChrome {
 }
 "@
 $source=Get-HidwayUpdateSource
-$destination=''
-if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'hidway-client.exe')){$destination=$PSScriptRoot}
-else{
- $registration=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HIDway' -ErrorAction SilentlyContinue
- if($registration -and $registration.PSObject.Properties['InstallLocation']){$destination=[string]$registration.InstallLocation}
-}
+$destination=Get-HidwayDestination
 [xml]$xaml=@"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="HIDway / Windows updates" Width="760" Height="510" MinWidth="620" MinHeight="420" Background="#1E1F22" Foreground="#ECEDEF" FontFamily="Segoe UI" WindowStartupLocation="CenterScreen">
  <Window.Resources>
@@ -51,6 +80,8 @@ $ui.Folder.Text=if($destination){$destination}else{'Install the complete Windows
 $script:current='unknown';$script:previous=$null;$script:offer=$null;$script:prepared=$null
 $script:localReady=$false;$script:instancesClosed=$false;$script:lastProcessCheck=[DateTime]::MinValue
 $script:task=$null;$script:async=$null;$script:operation='';$script:closing=$false
+# -AutoInstall stages: Wait (for HIDway to close), Check, Download, Install, then Done or Stopped.
+$script:autoStage=if($AutoInstall){'Wait'}else{''};$script:autoDeadline=[DateTime]::UtcNow.AddSeconds(30);$script:autoResult='';$script:frame=$null
 function Refresh-LocalState {
  $script:previous=$null;$script:localReady=$false
  try{
@@ -68,7 +99,7 @@ function Refresh-ProcessState {
  $script:lastProcessCheck=[DateTime]::UtcNow
 }
 function Refresh-UpdateButtons {
- $busy=$null -ne $script:task
+ $busy=$null -ne $script:task -or $script:autoStage -in @('Wait','Check','Download','Install')
  $ui.Check.IsEnabled=!$busy
  $ui.Download.IsEnabled=!$busy -and $null -ne $script:offer -and $script:offer.State -in @('Available','Preview')
  $ui.Install.IsEnabled=!$busy -and $null -ne $script:prepared -and $script:localReady -and $script:instancesClosed
@@ -81,21 +112,57 @@ function Start-UpdateTask([string]$Operation,[bool]$AllowPreview=$false) {
  if($Operation -eq 'Check'){$script:offer=$script:prepared=$null}
  $ui.Status.Text=switch($Operation){Check{'Checking the fixed repository...'} Download{'Downloading and verifying the release...'} Install{'Installing the verified Windows tools...'} Rollback{'Restoring the verified previous local tools...'}}
  $script:task=[PowerShell]::Create()
- $null=$script:task.AddScript({param($root,$operation,$directory,$version,$offer,$prepared,$allow,$cache)
+ $null=$script:task.AddScript({param($root,$operation,$directory,$version,$offer,$prepared,$allow,$cache,$hook)
   $ErrorActionPreference='Stop';Import-Module (Join-Path $root 'hidway-updater.psm1') -Force
+  if($hook){& (Get-Module hidway-updater) ([scriptblock]::Create($hook))}
   switch($operation){
    Check{Get-HidwayLatestUpdate $version}
    Download{Save-HidwayUpdate $offer $cache}
    Install{Install-HidwayUpdate $prepared $directory -AllowPreview:$allow;[pscustomobject]@{Message='Windows tools updated. Settings retained. ARM remains manual.'}}
    Rollback{Restore-HidwayUpdate $directory;[pscustomobject]@{Message='Previous tools restored. Current settings and the fixed-source updater were retained.'}}
   }
- }).AddArgument($PSScriptRoot).AddArgument($Operation).AddArgument($destination).AddArgument($script:current).AddArgument($script:offer).AddArgument($script:prepared).AddArgument($AllowPreview).AddArgument((Join-Path $env:LOCALAPPDATA 'HIDway\Updates'))
+ }).AddArgument($PSScriptRoot).AddArgument($Operation).AddArgument($destination).AddArgument($script:current).AddArgument($script:offer).AddArgument($script:prepared).AddArgument($AllowPreview).AddArgument((Join-Path $env:LOCALAPPDATA 'HIDway\Updates')).AddArgument($hookCode)
  $script:async=$script:task.BeginInvoke();Refresh-UpdateButtons
+}
+function Stop-AutoInstall([string]$Message) {
+ # Leaves the window open with the reason and the normal buttons; nothing more is started or installed.
+ if($Message){$ui.Status.Text=$Message}
+ $script:autoStage='Stopped';$script:autoResult='Stopped';Refresh-UpdateButtons
+ if($script:frame){$script:frame.Continue=$false}
+}
+function Start-HidwayClient {
+ # The installed client always starts disarmed. Tests (-TestHook) never start it.
+ if($TestHook){return}
+ $info=New-Object Diagnostics.ProcessStartInfo (Join-Path $destination 'hidway-client.exe')
+ $info.WorkingDirectory=$destination;$info.UseShellExecute=$true
+ $null=[Diagnostics.Process]::Start($info)
+}
+function Step-AutoInstall([bool]$Succeeded) {
+ # After each -AutoInstall operation: the same tasks as the buttons, one after the other.
+ if(!$Succeeded){Stop-AutoInstall '';return} # the module's message is already in the window
+ switch($script:autoStage){
+  Check{
+   if($script:offer.State -eq 'Available'){$script:autoStage='Download';Start-UpdateTask 'Download'}
+   elseif($script:offer.State -eq 'Preview'){Stop-AutoInstall "$($script:offer.Message) Choose Download, then Install stable release... to confirm."}
+   else{Stop-AutoInstall $script:offer.Message}
+  }
+  Download{$script:autoStage='Install';Start-UpdateTask 'Install' $false}
+  Install{
+   $script:autoStage='Done';$script:autoResult='Installed';Refresh-UpdateButtons
+   try{Start-HidwayClient}catch{$ui.Status.Text="$($ui.Status.Text) HIDway could not be started: $($_.Exception.Message)";if($script:frame){$script:frame.Continue=$false};return}
+   if($script:frame){$script:frame.Continue=$false}else{$window.Close()}
+  }
+ }
 }
 $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromMilliseconds(200)
 $timer.Add_Tick({
  if(!$script:task -and ([DateTime]::UtcNow-$script:lastProcessCheck).TotalSeconds -ge 1){Refresh-ProcessState;Refresh-UpdateButtons}
+ if($script:autoStage -eq 'Wait' -and !$script:task){
+  if(@(Get-Process -Name hidway-client -ErrorAction SilentlyContinue).Count -eq 0){$script:autoStage='Check';Refresh-LocalState;Start-UpdateTask 'Check'}
+  elseif([DateTime]::UtcNow -gt $script:autoDeadline){Stop-AutoInstall 'HIDway is still open, so nothing was installed. Close HIDway, then choose Check.'}
+ }
  if($script:task -and $script:async.IsCompleted){
+  $succeeded=$false
   try{
    $result=@($script:task.EndInvoke($script:async));if($script:task.HadErrors){throw ($script:task.Streams.Error | Out-String)}
    if($result.Count -ne 1){throw 'The operation returned an incomplete result.'}
@@ -104,9 +171,11 @@ $timer.Add_Tick({
     Download{$script:prepared=$result[0];$ui.Status.Text='Archive and payload verified. Close Client, Probe, Monitor and Setup, then choose Install.'}
     default{$ui.Status.Text=$result[0].Message;$script:prepared=$script:offer=$null;Refresh-LocalState}
    }
+   $succeeded=$true
   }catch{$problem=$_.Exception.Message;if($script:operation -in @('Install','Rollback')){Refresh-LocalState};$ui.Status.Text=$problem}
   finally{$script:task.Dispose();$script:task=$script:async=$null;Refresh-UpdateButtons}
   if($script:closing){$window.Close()}
+  elseif($script:autoStage -in @('Check','Download','Install')){Step-AutoInstall $succeeded}
  }
 })
 $ui.Check.Add_Click({Refresh-LocalState;Start-UpdateTask 'Check'})
@@ -136,6 +205,15 @@ if($ValidateOnly){
   $stream=[IO.File]::Create($RenderPath);try{$encoder.Save($stream)}finally{$stream.Dispose()}
  }
  Write-Output "Updater loaded: $($ui.Count) controls; Check/Download/Install/Rollback; no network or install";$window.Close();exit 0
+}
+if($AutoInstall){$ui.Status.Text='Update now: waiting for HIDway to close. Check, Download and Install then run by themselves.';Refresh-UpdateButtons}
+if($hookCode -and $AutoInstall){
+ # Tests: the same timer and tasks without showing the window, then one result line.
+ $script:frame=New-Object Windows.Threading.DispatcherFrame
+ $guard=New-Object Windows.Threading.DispatcherTimer;$guard.Interval=[TimeSpan]::FromSeconds(150);$guard.Add_Tick({$script:autoResult='Timeout';$script:frame.Continue=$false})
+ $timer.Start();$guard.Start();[Windows.Threading.Dispatcher]::PushFrame($script:frame);$timer.Stop();$guard.Stop()
+ $status=$ui.Status.Text -replace '[\r\n]+',' '
+ [Console]::Out.Write("HIDWAY-AUTOINSTALL result=$($script:autoResult) stage=$($script:autoStage) status=$status`r`n");[Console]::Out.Flush();exit 0
 }
 $owned=$false;$mutex=New-Object Threading.Mutex($false,'Local\HIDwayUpdateOwner')
 try{

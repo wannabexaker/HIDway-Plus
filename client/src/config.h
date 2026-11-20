@@ -52,6 +52,7 @@ typedef struct {
     int window_x, window_y; /* last window position; INT_MIN = unset */
     int badge;              /* show the badge while disarmed (click to arm) */
     int badge_x, badge_y;   /* badge top centre on screen; INT_MIN = unset */
+    int update_check;       /* 1 = one read-only check for a newer release at start (default) */
     char loopback_device[64]; /* Raw Input path token excluded from capture */
     char key_hex[80];       /* end-to-end key (64 hex chars); empty = encryption off */
     /* Both routes, indexed by loopback_mode. The flat fields above always

@@ -4,9 +4,9 @@
 #include <wchar.h>
 int hw_companion_open(HWND owner,int target)
 {
-    const wchar_t *files[]={L"hidway-client.exe",L"hidway-input-monitor.exe",L"HIDway-Setup.exe",L"HIDway-Setup.exe"};
-    const wchar_t *classes[]={L"HIDwayClient",L"HIDwayInputMonitor",NULL,NULL};
-    if(target<0||target>HW_COMPANION_SETUP)return HW_COMPANION_FAILED;
+    const wchar_t *files[]={L"hidway-client.exe",L"hidway-input-monitor.exe",L"HIDway-Setup.exe",L"HIDway-Setup.exe",L"HIDway-Setup.exe"};
+    const wchar_t *classes[]={L"HIDwayClient",L"HIDwayInputMonitor",NULL,NULL,NULL};
+    if(target<0||target>HW_COMPANION_UPDATE_NOW)return HW_COMPANION_FAILED;
     wchar_t folder[2048],path[2048];DWORD n=GetModuleFileNameW(NULL,folder,2048);
     if(!n||n>=2048)return HW_COMPANION_FAILED;
     wchar_t *slash=wcsrchr(folder,L'\\');if(!slash)return HW_COMPANION_FAILED;*slash=0;
@@ -24,7 +24,7 @@ int hw_companion_open(HWND owner,int target)
     }
     DWORD attributes=GetFileAttributesW(path);
     if(attributes==INVALID_FILE_ATTRIBUTES||(attributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)))return HW_COMPANION_MISSING;
-    return (INT_PTR)ShellExecuteW(owner,L"open",path,target==HW_COMPANION_UPDATES?L"--updates":NULL,folder,SW_SHOWNORMAL)>32?HW_COMPANION_OK:HW_COMPANION_FAILED;
+    return (INT_PTR)ShellExecuteW(owner,L"open",path,target==HW_COMPANION_UPDATES?L"--updates":target==HW_COMPANION_UPDATE_NOW?L"--update-now":NULL,folder,SW_SHOWNORMAL)>32?HW_COMPANION_OK:HW_COMPANION_FAILED;
 }
 const wchar_t *hw_companion_error(int result)
 {

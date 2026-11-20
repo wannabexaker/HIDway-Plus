@@ -165,6 +165,7 @@ static void set_defaults(hidway_config_t *cfg)
     cfg->window_x = cfg->window_y = INT_MIN;
     cfg->badge = 1;
     cfg->badge_x = cfg->badge_y = INT_MIN;
+    cfg->update_check = 1;
     strcpy(cfg->loopback_device, "VID_CAFE&PID_4877");
 }
 
@@ -407,6 +408,8 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
             cfg->window_y = (int)strtol(val, NULL, 10);
         } else if (!strcmp(key, "badge")) {
             cfg->badge = atoi(val) ? 1 : 0;
+        } else if (!strcmp(key, "update_check")) {
+            cfg->update_check = atoi(val) ? 1 : 0;
         } else if (!strcmp(key, "badge_x")) {
             cfg->badge_x = (int)strtol(val, NULL, 10);
         } else if (!strcmp(key, "badge_y")) {
@@ -489,6 +492,8 @@ int hidway_config_save(const char *path, const hidway_config_t *in)
         fprintf(f, "badge_x = %d\n", cfg->badge_x);
         fprintf(f, "badge_y = %d\n", cfg->badge_y);
     }
+    fprintf(f, "update_check = %d   # 1 = look for a newer release once at start, 0 = never\n",
+            cfg->update_check);
     if (cfg->window_x != INT_MIN && cfg->window_y != INT_MIN) {
         fprintf(f, "window_x = %d\n", cfg->window_x);
         fprintf(f, "window_y = %d\n", cfg->window_y);

@@ -53,6 +53,13 @@ panic_hotkey = ctrl+alt+shift+end
 # 1 = always shown, 0 = shown only while armed.
 badge = 1
 
+# Look for a newer stable HIDway release once each time HIDway opens: one
+# unauthenticated request to GitHub for the latest release of the project's
+# fixed repository. Nothing is downloaded or installed unless you press
+# Update now. 0 = never check (for example on a company network); Tools >
+# Updates still works when you click it.
+update_check = 1
+
 # Prevent the default HIDway Pico USB mouse from being captured again when
 # the Pico is plugged into this same PC. Change this if firmware VID/PID were
 # overridden at build time.

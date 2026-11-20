@@ -140,6 +140,66 @@ try{
  Check (!(Sync-HidwayRegisteredVersion $dest ($regKey+'-missing'))) 'missing entry is ignored'
 }finally{Remove-Item -LiteralPath $regKey -Recurse -Force;if(-not $regParentExisted){Remove-Item -LiteralPath 'HKCU:\Software\HIDwayUpdateTests' -Force -ErrorAction SilentlyContinue}}
 Reject {& $module {Set-Variable -Scope Script -Name Repo -Value 'foreign' -Force -ErrorAction Stop}} 'repository constant cannot be configured'
+# hidway-updates.ps1 -Check and -AutoInstall as their own processes, against a copied installation. The test
+# hook mocks the same private HTTP boundary and process inventory; the client is never started.
+$hookTemplate=@'
+$script:httpStatus=__STATUS__;$script:httpBody='__BODY__';$script:fixtureZip='__ZIP__';$script:running=__RUNNING__
+function script:Invoke-HidwayRequest($Kind,$Tag,$OutFile,$Size){
+ if($script:httpStatus -eq -1){throw 'offline'}
+ if($Kind -eq 'Asset' -and $script:httpStatus -eq 200){[IO.File]::Copy($script:fixtureZip,$OutFile)}
+ [pscustomobject]@{Status=$script:httpStatus;Body=$script:httpBody}
+}
+function script:Get-Process {param($Name,$ErrorAction) if($script:running -and @($Name) -contains 'hidway-probe'){[pscustomobject]@{ProcessName='hidway-probe'}}}
+function script:Get-HidwayOwnerGuards {}
+'@
+$releaseJson=$r | ConvertTo-Json -Depth 5 -Compress
+function New-UpdaterFixture([string]$Version,[int]$Status,[bool]$Running,[bool]$WithModule=$true){
+ $folder=Join-Path $base ('app-'+[guid]::NewGuid().ToString('N').Substring(0,8));$null=[IO.Directory]::CreateDirectory($folder)
+ foreach($name in @('hidway-client.exe','hidway-probe.exe')){[IO.File]::WriteAllText((Join-Path $folder $name),"old $name")}
+ [IO.File]::WriteAllText((Join-Path $folder 'VERSION'),$Version);[IO.File]::WriteAllText((Join-Path $folder 'hidway.ini'),'user configuration')
+ Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\tools\setup\hidway-updates.ps1') -Destination $folder
+ if($WithModule){Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\tools\setup\hidway-updater.psm1') -Destination $folder}
+ $hook=Join-Path $base ('hook-'+[guid]::NewGuid().ToString('N')+'.ps1')
+ $text=$hookTemplate.Replace('__STATUS__',[string]$Status).Replace('__BODY__',$releaseJson.Replace("'","''")).Replace('__ZIP__',$zip.Replace("'","''")).Replace('__RUNNING__',$(if($Running){'$true'}else{'$false'}))
+ [IO.File]::WriteAllText($hook,$text,[Text.Encoding]::ASCII)
+ [pscustomobject]@{Folder=$folder;Hook=$hook}
+}
+function Invoke-UpdaterScript($Fixture,[string]$Mode){
+ $info=New-Object Diagnostics.ProcessStartInfo (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+ $info.Arguments='-NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File "'+(Join-Path $Fixture.Folder 'hidway-updates.ps1')+'" '+$Mode+' -TestHook "'+$Fixture.Hook+'"'
+ $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+ $info.EnvironmentVariables['LOCALAPPDATA']=(Join-Path $base 'appdata') # download cache inside the test workspace
+ $process=[Diagnostics.Process]::Start($info);$out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync()
+ if(!$process.WaitForExit(200000)){$process.Kill();throw "FAIL: hidway-updates.ps1 $Mode did not finish"}
+ $process.WaitForExit();[pscustomobject]@{Code=$process.ExitCode;Out=$out.Result;Err=$err.Result}
+}
+$gui=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\tools\setup\hidway-updates.ps1'))
+Check ($gui.IndexOf('if($Check){') -gt 0 -and $gui.IndexOf('if($Check){') -lt $gui.IndexOf('Add-Type -AssemblyName PresentationFramework')) '-Check finishes before any window code is loaded'
+$run=Invoke-UpdaterScript (New-UpdaterFixture 'v1.0.0' 200 $false) '-Check'
+Check ($run.Code -eq 0 -and $run.Out -ceq "HIDWAY-UPDATE state=Available tag=v1.2.3`r`n") "-Check Available line ($($run.Out)$($run.Err))"
+$run=Invoke-UpdaterScript (New-UpdaterFixture 'v1.2.3' 200 $false) '-Check'
+Check ($run.Code -eq 0 -and $run.Out -ceq "HIDWAY-UPDATE state=Current tag=v1.2.3`r`n") "-Check Current line ($($run.Out))"
+$run=Invoke-UpdaterScript (New-UpdaterFixture 'v1.0.0' -1 $false) '-Check'
+Check ($run.Code -eq 0 -and $run.Out -ceq "HIDWAY-UPDATE state=Error tag=`r`n") "-Check network Error line ($($run.Out))"
+$run=Invoke-UpdaterScript (New-UpdaterFixture 'v1.0.0' 403 $false) '-Check'
+Check ($run.Code -eq 0 -and $run.Out -ceq "HIDWAY-UPDATE state=RateLimited tag=`r`n") "-Check RateLimited line ($($run.Out))"
+$run=Invoke-UpdaterScript (New-UpdaterFixture 'v1.0.0' 200 $false $false) '-Check'
+Check ($run.Code -eq 0 -and $run.Out -ceq "HIDWAY-UPDATE state=Error tag=`r`n") "-Check without the module is an Error line ($($run.Out))"
+# -AutoInstall success: checks, downloads, installs and reports; settings kept, previous version retained.
+$fixture=New-UpdaterFixture 'v1.0.0' 200 $false;$run=Invoke-UpdaterScript $fixture '-AutoInstall'
+Check ($run.Code -eq 0 -and $run.Out -cmatch '^HIDWAY-AUTOINSTALL result=Installed stage=Done status=Windows tools updated') "-AutoInstall installs ($($run.Out)$($run.Err))"
+Check ((Get-HidwayInstalledVersion $fixture.Folder) -eq 'v1.2.3' -and [IO.File]::ReadAllText((Join-Path $fixture.Folder 'hidway.ini')) -eq 'user configuration') '-AutoInstall installed the release and kept the settings'
+Check ((Get-HidwayRollback $fixture.Folder).Version -eq 'v1.0.0') '-AutoInstall keeps the previous version for Rollback'
+# Refusals stop with the module's message and leave the installation untouched.
+$fixture=New-UpdaterFixture 'v1.0.0' 200 $true;$run=Invoke-UpdaterScript $fixture '-AutoInstall'
+Check ($run.Out -cmatch '^HIDWAY-AUTOINSTALL result=Stopped stage=Stopped status=.*Close HIDway, Probe, Monitor and Setup') "-AutoInstall refuses while a HIDway tool runs ($($run.Out))"
+Check ((Get-HidwayInstalledVersion $fixture.Folder) -eq 'v1.0.0' -and [IO.File]::ReadAllText((Join-Path $fixture.Folder 'hidway-client.exe')) -eq 'old hidway-client.exe') 'refused -AutoInstall leaves the installation untouched'
+$fixture=New-UpdaterFixture 'dev' 200 $false;$run=Invoke-UpdaterScript $fixture '-AutoInstall'
+Check ($run.Out -cmatch '^HIDWAY-AUTOINSTALL result=Stopped stage=Stopped status=Installed version is not comparable.*to confirm') "-AutoInstall never replaces a preview without confirmation ($($run.Out))"
+Check ((Get-HidwayInstalledVersion $fixture.Folder) -eq 'dev') 'preview installation untouched'
+$fixture=New-UpdaterFixture 'v1.0.0' -1 $false;$run=Invoke-UpdaterScript $fixture '-AutoInstall'
+Check ($run.Out -cmatch '^HIDWAY-AUTOINSTALL result=Stopped stage=Stopped status=Update check failed') "-AutoInstall stops on a network error ($($run.Out))"
+Check ((Get-HidwayInstalledVersion $fixture.Folder) -eq 'v1.0.0') 'network error leaves the installation untouched'
 foreach($path in @((Join-Path $PSScriptRoot '..\tools\setup\hidway-updater.psm1'),(Join-Path $PSScriptRoot '..\tools\setup\hidway-updates.ps1'))){
  Check (@([IO.File]::ReadAllBytes($path) | Where-Object {$_ -gt 127}).Count -eq 0) 'pure ASCII updater source'
  $errors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$errors);Check (!$errors) 'PowerShell parser accepts source'
