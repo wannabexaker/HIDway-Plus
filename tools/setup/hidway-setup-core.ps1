@@ -55,7 +55,7 @@ function Assert-HidwayInstallPath([string]$Path) {
     $oneDrive = Get-HidwayOneDriveProblem $full
     if ($oneDrive) { throw $oneDrive }
     if ($full -eq [IO.Path]::GetPathRoot($full).TrimEnd('\')) { throw 'Choose a dedicated HIDway folder, not a drive root.' }
-    if ($full.Length -lt 8) { throw "Choose a folder whose full path has at least 8 characters, such as C:\HIDway or D:\Tools\HIDway ('$full' is too short)." }
+    if ($full.Length -lt 8) { throw "Choose a folder whose full path has at least 8 characters, such as C:\HIDway or D:\Apps\HIDway ('$full' is too short)." }
     foreach ($protected in @($env:WINDIR,$env:USERPROFILE,$env:LOCALAPPDATA,$env:ProgramFiles,${env:ProgramFiles(x86)})) {
         if ($protected -and $full -eq [IO.Path]::GetFullPath($protected).TrimEnd('\')) { throw 'Choose a dedicated HIDway subfolder.' }
     }
