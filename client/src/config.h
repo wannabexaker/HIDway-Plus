@@ -36,6 +36,9 @@ typedef struct {
     int source_virtual;     /* injected/device-less input (AnyDesk etc.) */
     int loopback_mode;      /* 0: another PC, 1: injected-only return to this PC */
     int loopback_pointer_pico; /* opt-in relative HID motion; default native cursor placement */
+    int loopback_physical;  /* experimental, Gaming PC route only: this PC's own keys, buttons
+                               and wheel also go through the Pico. Its own key, outside the
+                               route profiles; never derived from source_physical. */
     int virtual_click_cps;  /* 1..25 accepted clicks/sec per virtual button */
     int repeat_enabled;     /* hold selected button to generate paced clicks */
     int repeat_button;      /* 0..4: left, right, middle, back, forward */

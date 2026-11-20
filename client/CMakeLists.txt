@@ -25,6 +25,8 @@ add_executable(hidway-client WIN32
     ${HIDWAY_COMMON}/hidway_recording.c
     ${HIDWAY_COMMON}/hidway_input_source.c
     ${HIDWAY_COMMON}/hidway_input_state.c
+    ${HIDWAY_COMMON}/hidway_echo.c
+    ${HIDWAY_COMMON}/hidway_kbd.c
     ${HIDWAY_COMMON}/keymap_sc2hid.c
     ${HIDWAY_COMMON}/hidway_crypto.c
     $<$<BOOL:${MSVC}>:app.rc>
@@ -48,6 +50,8 @@ add_executable(hidway-client-tests
     ${HIDWAY_COMMON}/hidway_recording.c
     ${HIDWAY_COMMON}/hidway_input_source.c
     ${HIDWAY_COMMON}/hidway_input_state.c
+    ${HIDWAY_COMMON}/hidway_echo.c
+    ${HIDWAY_COMMON}/hidway_kbd.c
     ${HIDWAY_COMMON}/keymap_sc2hid.c
     ${HIDWAY_COMMON}/hidway_crypto.c
 )

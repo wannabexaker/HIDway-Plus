@@ -163,6 +163,28 @@ int main(int argc, char **argv)
           d.source_virtual && d.repeat_cps == 9 && !strcmp(d.target, "192.0.2.45") && profile_is(&d.profiles[1], &d));
     CHECK(d.profiles[0].source_physical && d.profiles[0].source_touchpad && d.profiles[0].repeat_cps == 9 &&
           !strcmp(d.profiles[0].target, "192.0.2.45"));
+    /* ... and source_physical = 1 there never switches physical-through-Pico on */
+    CHECK(!d.loopback_physical);
+
+    /* loopback_physical: off by default, its own top-level key, kept across
+     * saves and route switches, never derived from source_physical. */
+    hidway_config_load("missing-hidway-test-config", &c);
+    CHECK(!c.loopback_physical);
+    write_file(path, "loopback_mode = 1\nsource_physical = 1\nloopback_physical = 1\n");
+    CHECK(hidway_config_load(path, &d) && d.loopback_physical && d.loopback_mode == 1);
+    CHECK(hidway_config_save(path, &d));
+    read_file(path, text, sizeof text);
+    CHECK(strstr(text, "\nloopback_physical = 1") != NULL && !strstr(text, "remote.loopback_physical") &&
+          !strstr(text, "gaming.loopback_physical"));
+    CHECK(hidway_config_load(path, &e) && e.loopback_physical);
+    hidway_profile_select(&e, 0);
+    CHECK(!e.loopback_mode && e.loopback_physical); /* kept; it only acts on the Gaming PC route */
+    hidway_profile_select(&e, 1);
+    CHECK(e.loopback_mode && e.loopback_physical);
+    e.loopback_physical = 0;
+    CHECK(hidway_config_save(path, &e) && hidway_config_load(path, &d) && !d.loopback_physical);
+    write_file(path, "loopback_physical = 7   # any non-zero is on\nloopback_mode = 0\n");
+    CHECK(hidway_config_load(path, &d) && d.loopback_physical == 1 && !d.loopback_mode);
     /* A virtual-only Remote PC route from such a file is kept as it was. */
     write_file(path, "source_physical = 0\nsource_touchpad = 0\nsource_virtual = 1\nloopback_mode = 1\n");
     CHECK(hidway_config_load(path, &d) && !d.profiles[0].source_physical && d.profiles[0].source_virtual);
