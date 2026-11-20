@@ -367,6 +367,7 @@ static struct {
     char input_status[160];
     /* Connection tab: why the last Save was refused or failed (empty: the hint) */
     int conn_error;
+    int conn_bad; /* 1-4: the field the last refused Save named (drawn with a red frame), 0 none */
     char conn_status[160];
     /* Pico on this PC indication (read-only, GUI-thread timer) */
     unsigned pico_state;
@@ -2720,7 +2721,8 @@ static void hotkey_msg(char *out, size_t cap)
 /* The text and severity the strip shows now. */
 static void msg_current(char *out, size_t cap, int *sev)
 {
-    const char *t[MSRC_COUNT] = {g.conn_status, g.input_status, g.local_pico_notice};
+    /* the Pico notice was shown by LIVE INPUT only while disarmed: not while ARMED */
+    const char *t[MSRC_COUNT] = {g.conn_status, g.input_status, g.armed ? "" : g.local_pico_notice};
     /* Each message was shown on one tab before; on that tab it is shown first
      * (the hotkey warning was on Tools), on the others the latest one. */
     int home = g.tab == TAB_CONNECTION ? MSRC_CONN : g.tab == TAB_INPUT ? MSRC_INPUT
@@ -3223,13 +3225,13 @@ static void paint_control(HDC dc)
 
     /* section head: CONNECTION, the encryption chip, relay status and address */
     tracked(dc, g.f_section, W_TEXT3, x0, cy - font_h(dc, g.f_section) / 2, "CONNECTION");
-    int bx = x0 + tracked_w(dc, g.f_section, "CONNECTION") + S(10);
+    int bx = x0 + tracked_w(dc, g.f_section, "CONNECTION") + S(10), chw;
     if (g.key_error)
-        chip(dc, bx, cy, S(18), "KEY ERROR", W_RED_F, W_RED_BD, W_RED_TX);
+        chw = chip(dc, bx, cy, S(18), "KEY ERROR", W_RED_F, W_RED_BD, W_RED_TX);
     else if (g.crypto_on)
-        chip(dc, bx, cy, S(18), "E2E", W_GREEN_F, W_GREEN_BD, W_GREEN_TX);
+        chw = chip(dc, bx, cy, S(18), "E2E", W_GREEN_F, W_GREEN_BD, W_GREEN_TX);
     else
-        chip(dc, bx, cy, S(18), "E2E OFF", W_FIELD, W_LINE2, W_TEXT3);
+        chw = chip(dc, bx, cy, S(18), "E2E OFF", W_FIELD, W_LINE2, W_TEXT3);
     char addr[160];
     snprintf(addr, sizeof addr, "%s:%d", g.cfg.target, g.cfg.port);
     const char *st, *shortt;
@@ -3237,7 +3239,7 @@ static void paint_control(HDC dc)
     COLORREF col;
     st = relay_status(&shortt, &kind, &col);
     int right = L->body.right, aw = text_w(dc, g.f_mono_s, addr), sw = text_w(dc, g.f_label, st);
-    int room = right - (bx + S(80)) - S(12) - S(10) - sw - S(14); /* what the address may take */
+    int room = right - (bx + chw) - S(12) - S(10) - sw - S(14); /* what the address may take */
     if (aw > room && room > S(40))
         aw = room;                                                 /* a long host ends in an ellipsis */
     text_fit(dc, g.f_mono_s, W_TEXT3, right - aw, cy, right, addr);
@@ -3403,6 +3405,8 @@ static void paint_connection(HDC dc)
     for (int i = 0; i < 4; i++) {
         text_vc(dc, g.f_label, W_TEXT2, L->frame[i].left + S(1), L->conn_lbl_cy[i / 2], labels[i]);
         field_frame(dc, L->frame[i], ID_TARGET + i, 1);
+        if (g.conn_error && g.conn_status[0] && g.conn_bad == i + 1) /* the field a refused Save named */
+            round_rect(dc, L->frame[i], S(6), W_FIELD, W_RED);
     }
     text_fit(dc, g.f_label, W_TEXT3, x0, L->conn_hint_cy, L->body.right,
              "Save disarms first. A wrong value is refused and nothing changes.");
@@ -4028,7 +4032,9 @@ static void connection_status(const char *text, int error)
 {
     snprintf(g.conn_status, sizeof g.conn_status, "%s", text ? text : "");
     g.conn_error = error;
-    if (g.conn_status[0])
+    if (!g.conn_status[0])
+        g.conn_bad = 0;
+    else
         msg_touch(MSRC_CONN);
     invalidate_fields();
 }
@@ -4060,18 +4066,22 @@ static int apply_settings(void)
         t++;
     if (!*t) {
         connection_status("Settings not saved: enter the relay address.", 1);
+        g.conn_bad = 1;
         return 0;
     }
     if (!field_int(g.edit[1], 1, 65535, &port)) {
         connection_status("Settings not saved: port must be 1 to 65535.", 1);
+        g.conn_bad = 2;
         return 0;
     }
     if (!field_int(g.edit[2], 10, 1000, &rate)) {
         connection_status("Settings not saved: rate must be 10 to 1000 Hz.", 1);
+        g.conn_bad = 3;
         return 0;
     }
     if (!field_int(g.edit[3], 0, 60000, &disarm)) {
         connection_status("Settings not saved: disarm must be 0 (off) to 60000 ms.", 1);
+        g.conn_bad = 4;
         return 0;
     }
 

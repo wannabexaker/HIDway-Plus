@@ -162,6 +162,7 @@ static void ui_state(void)
     g.cfg.relay_keyboard = g.cfg.relay_mouse = 1; g.cfg.source_physical = 1;
     g.cfg.virtual_click_cps = g.cfg.repeat_cps = 10; g.cfg.repeat_sources = 1; g.cfg.history_enabled = 1;
     g.preview = 1; g.armed = 0; g.net_ok = 1; g.session_id = 456; g.toggle_hk_ok = 1;
+    strcpy(g.cfg.toggle.text, "ctrl+shift+f12"); strcpy(g.cfg.panic.text, "ctrl+alt+shift+end");
     output_count = input_count = input_at = 0;
     fixture_saves = 0; fixture_save_ok = 1; fixture_peer = 0;
     g.local_pico_notice[0] = 0;
@@ -253,10 +254,7 @@ static void layout_case(UINT dpi, int banner, int two_lines, int tab, int gaming
     g.armed_at_ms = timeGetTime() - 83000;
     g.status_seen = armed;
     input_tab_load();
-    if (two_lines)
-        pico_notice(two_line_notice, SEV_WARN);
-    else
-        g.local_pico_notice[0] = 0;
+    connection_status(two_lines ? two_line_notice : NULL, two_lines);
     select_tab(tab);
     banner_sync();
     compute_layout();
@@ -548,10 +546,13 @@ static void test_shot(const char *name)
         return;
     RECT r = {0, 0, g.L.W, g.L.H};
     AdjustWindowRectExForDpi(&r, WIN_STYLE, FALSE, 0, g.dpi);
-    SetWindowPos(g.hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+    /* shown off-screen, as the preview runs are, so the edit controls paint too */
+    SetWindowPos(g.hwnd, NULL, -20000, -20000, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(g.hwnd, SW_SHOWNOACTIVATE);
     snprintf(g.shot_path, sizeof g.shot_path, "%s\\%s.bmp", dir, name);
     save_screenshot(g.hwnd);
     g.shot_path[0] = 0;
+    ShowWindow(g.hwnd, SW_HIDE);
 }
 
 int main(void)
@@ -1162,6 +1163,9 @@ int main(void)
     msg_sync();VERIFY(g.msg_lines==2&&g.L.msg.bottom-g.L.msg.top>=S(45)&&g.L.msg.top==S(374)&&g.L.body.bottom==S(364));
     select_tab(TAB_TOOLS);msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Press ARM when ready")); /* still there on another tab */
     select_tab(TAB_CONTROL);
+    /* LIVE INPUT showed it only while disarmed: ARMED shows the armed line, and the notice is back after DISARM */
+    g.armed=1;msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Armed. Toggle with")&&sev==SEV_OK);
+    g.armed=0;msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Press ARM when ready")&&sev==SEV_OK);
     /* the Pico notice stays as long as before: until ARM or a save clears it */
     g.local_pico_notice[0]=0;msg_sync();
     msg_current(strip,sizeof strip,&sev);VERIFY(sev==SEV_INFO&&g.msg_lines==1&&g.L.msg.top==S(386)&&g.L.body.bottom==S(376));
@@ -1277,6 +1281,16 @@ int main(void)
         select_tab(TAB_CONTROL);
     }
     g.dpi=96;create_fonts();ui_state();compute_layout();apply_layout();
+    /* review shots: a two-line message, the banner and a long message together, edits not applied */
+    pico_notice(two_line_notice,SEV_WARN);select_tab(TAB_CONTROL);msg_sync();test_shot("twoline-control-96");
+    g.update_offer=1;strcpy(g.update_tag,"v0.6.1");banner_sync();msg_sync();test_shot("twoline-banner-control-96");
+    g.cfg.loopback_mode=1;g.cfg.loopback_physical=1;select_tab(TAB_CONNECTION);select_tab(TAB_INPUT);msg_sync();
+    test_shot("twoline-banner-input-gaming-physical-96");
+    g.update_offer=2;banner_sync();ui_state();
+    select_tab(TAB_INPUT);input_status("Settings not saved: the repeat source includes a source that is not ticked under Sources.",1);
+    msg_sync();test_shot("err-input-96");
+    input_status(NULL,0);g.input_dirty=1;g.tab_dirty_drawn=0;msg_sync();test_shot("dirty-input-96");
+    ui_state();
     test_shot("control-96");
     g.armed=1;g.armed_at_ms=timeGetTime()-83000;g.status_seen=1;test_shot("control-armed-96");g.armed=0;g.status_seen=0;
     /* the old geometry tests' WAKE: the tile that offers it is wide enough */
@@ -1383,6 +1397,7 @@ int main(void)
         VERIFY(g.armed&&output_count==0&&g.conn_error&&strstr(g.conn_status,"not saved")&&
                strstr(g.conn_status,bad_fields[i].message)&&!memcmp(&before,&g.cfg,sizeof before)&&
                !fixture_saves&&!g.saved_flash);
+        VERIFY(g.conn_bad==bad_fields[i].field+1); /* the refused field is marked */
     }
     /* Range ends are accepted (spaces around a number too); Save disarms. */
     connection_fields_load();
@@ -1411,7 +1426,7 @@ int main(void)
         RECT all={0,0,g.L.W,g.L.H};paint_content(mdc,all);
         SelectObject(mdc,ob);DeleteObject(bm);DeleteDC(mdc);ReleaseDC(NULL,sdc);
     }
-    connection_fields_load();VERIFY(!g.conn_status[0]); /* reloaded fields: hint again */
+    connection_fields_load();VERIFY(!g.conn_status[0]&&!g.conn_bad); /* reloaded fields: hint again */
 
     /* ---- Route profiles: switching stores the route left, restores the
      * other route's own values, applies and saves. ---- */
