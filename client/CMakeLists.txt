@@ -16,6 +16,7 @@ add_custom_target(hidway_version
 
 add_executable(hidway-client WIN32
     src/main.c
+    src/update_check.c
     ${HIDWAY_COMMON}/hidway_companion_win.c
     src/local_pico.c
     src/config.c
@@ -42,6 +43,7 @@ add_executable(hidway-probe
 
 add_executable(hidway-client-tests
     ../tests/test_client_win.c
+    src/update_check.c
     ${HIDWAY_COMMON}/hidway_companion_win.c
     src/local_pico.c
     src/config.c src/net.c

@@ -73,7 +73,8 @@ static int legacy_values(const hidway_config_t *d)
            d->toggle.mods == (MOD_CONTROL | MOD_ALT) && !strcmp(d->panic.text, "ctrl+alt+shift+pause") &&
            d->mouse4.vk == VK_OEM_3 && !d->mouse5.vk && d->badge == 0 && d->badge_x == 640 && d->badge_y == 12 &&
            d->window_x == -1200 && d->window_y == 80 && !strcmp(d->loopback_device, "VID_1234&PID_5678") &&
-           !strcmp(d->key_hex, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+           !strcmp(d->key_hex, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff") &&
+           d->update_check == 1; /* a file from before update_check keeps the check on */
 }
 static void drain(void)
 {
@@ -115,6 +116,18 @@ int main(int argc, char **argv)
     hidway_config_load(path, &d);
     CHECK(d.loopback_mode == 1 && d.repeat_cps == 25 && d.repeat_button == 0 &&
           d.repeat_sources == 1);
+    /* update_check: on by default and in old files; 0 turns it off and is kept on save. */
+    CHECK(d.update_check == 1);
+    f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) {
+        fputs("update_check = 0   # company network\n", f);
+        fclose(f);
+    }
+    CHECK(hidway_config_load(path, &d) && d.update_check == 0);
+    CHECK(hidway_config_save(path, &d) && hidway_config_load(path, &e) && e.update_check == 0);
+    e.update_check = 1;
+    CHECK(hidway_config_save(path, &e) && hidway_config_load(path, &d) && d.update_check == 1);
     /* ---- Route profiles ---- */
     /* No file: Remote PC in use, Gaming PC created as the same-PC preset. */
     hidway_config_load("missing-hidway-test-config", &c);

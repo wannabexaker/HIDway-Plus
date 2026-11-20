@@ -44,12 +44,15 @@ int main(void)
     CHECK(!wcscmp(opened,L"C:\\Fixture\\hidway-input-monitor.exe"));
     CHECK(hw_companion_open(NULL,HW_COMPANION_UPDATES)==HW_COMPANION_OK&&launched==3);
     CHECK(!wcscmp(opened,L"C:\\Fixture\\HIDway-Setup.exe")&&!wcscmp(arguments,L"--updates"));
+    CHECK(hw_companion_open(NULL,HW_COMPANION_UPDATE_NOW)==HW_COMPANION_OK&&launched==4);
+    CHECK(!wcscmp(opened,L"C:\\Fixture\\HIDway-Setup.exe")&&!wcscmp(arguments,L"--update-now"));
+    CHECK(hw_companion_open(NULL,HW_COMPANION_UPDATE_NOW+1)==HW_COMPANION_FAILED&&launched==4);
     fixture_existing=1;
-    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OK&&launched==3&&shown==1);
+    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OK&&launched==4&&shown==1);
     wcscpy(fixture_actual,L"C:\\Other\\hidway-client.exe");
-    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OTHER_COPY&&launched==3&&shown==1);
+    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OTHER_COPY&&launched==4&&shown==1);
     query_ok=0;
-    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OTHER_COPY&&launched==3);
+    CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_OTHER_COPY&&launched==4);
     fixture_existing=0;shell_result=31;
     CHECK(hw_companion_open(NULL,HW_COMPANION_CLIENT)==HW_COMPANION_FAILED);
     module_length=2048;

@@ -86,8 +86,11 @@ if a keyboard and mouse were plugged in locally.
 - **Late input is dropped, not replayed.** Key and button changes are kept in
   order through small bounded queues; anything that waited too long is
   cancelled with a release instead of arriving late.
-- **Nothing happens by itself.** No automatic ARM, no background update timer,
-  no automatic elevation, no telemetry.
+- **Nothing happens by itself.** No automatic ARM, no automatic download or
+  install, no background update timer, no automatic elevation, no telemetry.
+  When HIDway opens it asks GitHub once whether a newer release exists
+  (`update_check = 0` in `hidway.ini` turns that off); it only shows a line
+  you can answer with Update now or Later.
 
 ## Responsible use
 
@@ -154,7 +157,16 @@ start HIDway as administrator yourself; it never elevates on its own.
 - **Updates** in HIDway (or **Check for updates** in the Monitor and the Start
   menu) checks this repository only, verifies size, digest, archive paths and
   the internal manifest, and installs both Windows tools. Settings, labels and
-  recordings are kept. Nothing is downloaded or installed automatically.
+  recordings are kept.
+- When HIDway opens it checks once for a newer stable release (one request to
+  this repository's latest release; GitHub sees your IP address as with any
+  web request, and HIDway sends nothing about you or your settings). If
+  there is one, a line under the title says so, with **Update now** and
+  **Later**; it is hidden while armed. Update now closes HIDway (settings
+  saved), installs the release with the same checks and opens HIDway again,
+  disarmed. Later hides the line until the next start. Nothing is downloaded
+  or installed unless you press Update now; `update_check = 0` in `hidway.ini`
+  turns the check off.
 - The Raspberry Pi relay follows the same tags with its own nightly check and
   rollback (`hidway-status`, `sudo hidway-update`).
 - With two PCs and a Pi, `tools/Update-All.cmd` updates all three with one

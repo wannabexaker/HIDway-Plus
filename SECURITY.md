@@ -69,8 +69,11 @@ uses visible OpenSSH host verification/login/sudo and trusts the configured publ
 repository main branch. The wizard does not store credentials. Firmware selection
 checks BOOTSEL family and still requires the user to identify W/non-W hardware.
 
-The Windows **Check for updates** path is manual and uses a fixed public GitHub
-repository. It refuses drafts/prereleases, ambiguous assets, wrong URLs, missing
+The Windows **Check for updates** path uses a fixed public GitHub repository.
+When HIDway opens it makes one unauthenticated, read-only request for that
+repository's latest release (`update_check = 0` in `hidway.ini` turns it off);
+downloading and installing happen only after the user presses Update now or
+uses the Updates window. It refuses drafts/prereleases, ambiguous assets, wrong URLs, missing
 digests, oversized archives, traversal/duplicate entries and payload/version
 mismatches. The outer GitHub asset SHA-256 and internal manifest are checked
 before the paired installer runs. Applying refuses running client/Monitor

@@ -35,6 +35,7 @@
 #include "capture_queue.h"
 #include "send_clock.h"
 #include "replay.h"
+#include "update_check.h"
 static struct {
     int active;hw_recording file;hidway_replay_state state;unsigned next;
     uint32_t started,last_tick;wchar_t path[2048];
@@ -112,6 +113,7 @@ int WINAPI GdipDrawLines(void *graphics, void *pen, const HW_PointF *points, int
 #define WM_CAPTURE_READY (WM_APP + 5)
 #define WM_SEND_TICK (WM_APP + 6)
 #define WM_CAPTURE_PMOUSE (WM_APP + 7) /* this PC's mouse through the Pico: wp WM_*, lp mouseData */
+#define WM_UPDATE_RESULT (WM_APP + 8)  /* the start update check ended: wp HW_UPDATE_* */
 #define KEYF_E0 0x10000
 #define KEYF_UP 0x20000
 #define KEYF_VIRTUAL 0x40000
@@ -127,7 +129,8 @@ enum {
     IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO, ID_UPDATES,
     ID_COMPACT, /* new IDs go last: tests post commands by number */
     ID_TABS, ID_TAB_CONTROL, ID_TAB_CONNECTION, ID_TAB_INPUT, ID_TAB_TOOLS,
-    ID_PROFILE_REMOTE, ID_PROFILE_GAMING, ID_INPUT_APPLY
+    ID_PROFILE_REMOTE, ID_PROFILE_GAMING, ID_INPUT_APPLY,
+    ID_UPDATE_NOW, ID_UPDATE_LATER /* the update banner */
 };
 /* Retired with the tabbed window, numbers kept: ID_OPTIONS (the Input options
  * window; a posted command now opens the Input tab), ID_ROUTE (its route combo,
@@ -188,6 +191,8 @@ typedef struct {
     RECT mark, pill, tabs, page;
     int title_x, title_y, sub_y;
     RECT arm, panic, local_pico;
+    /* update banner: its text area and its two buttons (all from `banner`) */
+    RECT banner, banner_now, banner_later;
     /* Control */
     RECT stats, tiles[4], live;
     int info_cy;
@@ -295,6 +300,12 @@ static struct {
     /* Pico on this PC indication (read-only, GUI-thread timer) */
     unsigned pico_state;
     int pico_known, pico_pending;
+    /* Update banner from the one check per start: update_offer 0 none, 1 offered
+     * (shown while disarmed), 2 dismissed with Later or handed to the updater. */
+    int update_offer, update_check_started;
+    char update_tag[HW_UPDATE_TAG_MAX];
+    char update_notice[64]; /* why Update now did not start, in place of the banner text */
+    HWND update_now, update_later;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
           f_btn, f_btn_big, f_chip;
     HICON mark_icon;
@@ -2128,6 +2139,16 @@ static void compute_layout(void)
     L->local_pico = R(202, 462, 344, 508);
     L->panic = R(W - P - 150, 462, W - P, 508);
 
+    /* Update banner: the header's second line (in place of the subtitle),
+     * left of the state pill, above the tab strip; nothing else moves. To
+     * place it elsewhere change b_l..b_b: the buttons follow its right edge. */
+    {
+        const int b_l = P + 40, b_t = 33, b_r = W - P - 148, b_b = 53;
+        L->banner = R(b_l, b_t, b_r, b_b);
+        L->banner_later = R(b_r - 50, b_t, b_r, b_b);
+        L->banner_now = R(b_r - 50 - 6 - 84, b_t, b_r - 56, b_b);
+    }
+
     /* Control: CONNECTION (tiles, Pico, route) and LIVE INPUT. The GAMING PC
      * tile gets the remaining width so its WAKE chip sits clear of the label
      * and the value. */
@@ -2271,6 +2292,8 @@ static void apply_layout(void)
     place(g.arm, L->arm);
     place(g.local_pico_button, L->local_pico);
     place(g.panic, L->panic);
+    place(g.update_now, L->banner_now);
+    place(g.update_later, L->banner_later);
 
     place(g.save, L->save);
     for (int i = 0; i < 4; i++)
@@ -2391,6 +2414,122 @@ static int title_cy(RECT card_rect)
     return card_rect.top + S(12) + S(7);
 }
 
+/* ---- update banner ------------------------------------------------------
+ * One read-only check per start (update_check.c); when it finds a newer
+ * stable release, a slim line in the header offers Update now / Later. It is
+ * hidden while armed or replaying and never touches the action row. Its
+ * layout is L->banner*, its painting paint_banner(), its buttons draw_button(). */
+
+static int banner_visible(void)
+{
+    return g.update_offer == 1 && !g.armed && !replay.active;
+}
+
+static int control_shown(HWND h)
+{
+    return h && (GetWindowLongPtrA(h, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
+/* Show or hide the banner buttons to match banner_visible(). Called from the
+ * UI timer, so arming hides them within one tick; the painted text follows
+ * banner_visible() at once. The focus is moved only while disarmed: while
+ * armed the badge may own it. */
+static void banner_sync(void)
+{
+    int on = banner_visible(), changed = 0;
+    HWND focus = GetFocus(), b[2] = {g.update_now, g.update_later};
+    for (int i = 0; i < 2; i++) {
+        if (!b[i] || control_shown(b[i]) == on)
+            continue;
+        if (!on && focus == b[i] && !g.armed)
+            SetFocus(g.tabs ? g.tabs : g.arm);
+        ShowWindow(b[i], on ? SW_SHOWNA : SW_HIDE);
+        changed = 1;
+    }
+    if (changed && g.hwnd)
+        InvalidateRect(g.hwnd, &g.L.banner, FALSE);
+}
+
+static void paint_banner(HDC dc)
+{
+    RECT t = g.L.banner;
+    t.right = g.L.banner_now.left - S(8);
+    char text[96];
+    if (g.update_notice[0])
+        snprintf(text, sizeof text, "%s", g.update_notice);
+    else
+        snprintf(text, sizeof text, "HIDway %s is available", g.update_tag);
+    text_in(dc, g.f_label, g.update_notice[0] ? C_WARN : C_TEXT, t,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX, text);
+}
+
+/* The result of the start check (wParam of WM_UPDATE_RESULT). Only a newer
+ * stable release with a well-formed tag shows the banner; a failed check adds
+ * one quiet line to the recent list; anything else says nothing. */
+static void update_result(int code, const char *tag)
+{
+    if (code == HW_UPDATE_AVAILABLE && !g.update_offer && hw_update_tag_valid(tag) &&
+        strlen(tag) < sizeof g.update_tag) {
+        strcpy(g.update_tag, tag);
+        g.update_notice[0] = 0;
+        g.update_offer = 1;
+        banner_sync();
+        if (g.hwnd)
+            InvalidateRect(g.hwnd, &g.L.banner, FALSE);
+    } else if (code == HW_UPDATE_FAILED) {
+        history_add('i', "Update check did not finish - Tools > Updates checks again");
+    }
+}
+
+/* Later: hidden until the next start (nothing is remembered). */
+static void update_later(void)
+{
+    if (g.update_offer != 1)
+        return;
+    g.update_offer = 2;
+    banner_sync();
+}
+
+/* Update now: only while disarmed and not replaying. Starts the updater
+ * (HIDway-Setup.exe --update-now), which waits for this window to close,
+ * then checks, downloads and installs and opens HIDway again, disarmed. This
+ * window closes the normal way, so the settings are saved as on any exit. */
+static void update_now(void)
+{
+    if (g.update_offer != 1)
+        return;
+    if (g.armed || replay.active) {
+        history_add('i', "Update now: DISARM first");
+        return;
+    }
+    if (g.preview) {
+        snprintf(g.update_notice, sizeof g.update_notice, "Preview: the updater is not started");
+    } else if (hw_companion_open(g.hwnd, HW_COMPANION_UPDATE_NOW) != HW_COMPANION_OK) {
+        snprintf(g.update_notice, sizeof g.update_notice, "The updater did not start");
+        history_add('w', "Update now: HIDway-Setup.exe did not start - HIDway stays open");
+    } else {
+        g.update_offer = 2;
+        banner_sync();
+        PostMessageA(g.hwnd, WM_CLOSE, 0, 0);
+        return;
+    }
+    if (g.hwnd)
+        InvalidateRect(g.hwnd, &g.L.banner, FALSE);
+}
+
+/* Once per start, after the window is up: never in previews, screenshots or
+ * a start that loads a recording, and not with update_check = 0. The check
+ * itself runs on a worker thread and needs the updater scripts beside the
+ * executable. */
+static void update_check_start(void)
+{
+    if (g.preview || g.shot_path[0] || replay.path[0] || replay.active || !g.cfg.update_check ||
+        g.update_check_started)
+        return;
+    g.update_check_started = 1;
+    hw_update_check_begin(g.hwnd, WM_UPDATE_RESULT);
+}
+
 static void paint_header(HDC dc)
 {
     layout_t *L = &g.L;
@@ -2403,7 +2542,10 @@ static void paint_header(HDC dc)
     RECT version={L->title_x + text_w(dc,g.f_title,"HIDway")+S(8),
         version_top,L->pill.left-S(10),version_top+font_h(dc,g.f_label)};
     text_in(dc,g.f_label,C_TEXT3,version,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS,HIDWAY_VERSION);
-    text_at(dc, g.f_sub, C_TEXT3, L->title_x, L->sub_y, "Remote keyboard & mouse over real USB HID");
+    if (banner_visible())
+        paint_banner(dc); /* in place of the subtitle */
+    else
+        text_at(dc, g.f_sub, C_TEXT3, L->title_x, L->sub_y, "Remote keyboard & mouse over real USB HID");
 
     RECT p = L->pill;
     COLORREF fill = g.armed ? C_LIVE_F : C_FIELD;
@@ -2942,7 +3084,8 @@ static void draw_button(const DRAWITEMSTRUCT *d)
 
     /* paint what is behind the control first: no default-grey corners. Only
      * the action row sits on the window background; the rest is on cards. */
-    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_LOCAL_PICO) ? C_BG : C_CARD);
+    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_LOCAL_PICO || id == ID_UPDATE_NOW ||
+                        id == ID_UPDATE_LATER) ? C_BG : C_CARD);
 
     char label[32];
     GetWindowTextA(d->hwndItem, label, sizeof label);
@@ -2998,6 +3141,14 @@ static void draw_button(const DRAWITEMSTRUCT *d)
             tx = hot ? RGB(255, 186, 178) : C_DNG_TX;
             f = g.f_btn_big;
             rad = S(10);
+        } else if (id == ID_UPDATE_NOW || id == ID_UPDATE_LATER) {
+            /* update banner: small header buttons, unlike the action row */
+            int primary = id == ID_UPDATE_NOW;
+            fill = down ? C_SEC : hot ? C_SEC_H : primary ? C_CHIP : C_BG;
+            bd = hot ? C_FOCUS_BD : primary ? C_CHIP_BD : C_SEC_BD;
+            tx = hot ? C_WHITE : primary ? C_TEXT : C_TEXT2;
+            f = g.f_chip;
+            rad = S(5);
         } else if (id == ID_PROFILE_REMOTE || id == ID_PROFILE_GAMING) {
             /* two-way route selector: the route in use is lit, with a dot */
             int on = (id == ID_PROFILE_GAMING) == (g.cfg.loopback_mode != 0);
@@ -3605,6 +3756,12 @@ static void register_tabs_class(void)
 static void create_controls(HWND h)
 {
     register_tabs_class();
+    /* Update banner in the header, first in reading order; hidden (and so
+     * skipped by Tab) until a newer release is found. */
+    g.update_now = mk(h, "BUTTON", "Update now", BS_OWNERDRAW | WS_TABSTOP, ID_UPDATE_NOW);
+    g.update_later = mk(h, "BUTTON", "Later", BS_OWNERDRAW | WS_TABSTOP, ID_UPDATE_LATER);
+    ShowWindow(g.update_now, SW_HIDE);
+    ShowWindow(g.update_later, SW_HIDE);
     g.tabs = CreateWindowExA(0, "HIDwayTabs", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, h,
                              (HMENU)(INT_PTR)ID_TABS, g.inst, NULL);
 
@@ -3664,7 +3821,7 @@ static void create_controls(HWND h)
 
     HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2], g.src[0], g.src[1], g.src[2],
                    g.monitor_button, g.replay_button, g.updates_button, g.local_pico_button, g.repeat,
-                   g.profile_button[0], g.profile_button[1], g.input_apply};
+                   g.profile_button[0], g.profile_button[1], g.input_apply, g.update_now, g.update_later};
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
         if (btns[i])
             subclass(btns[i], btn_proc);
@@ -3675,6 +3832,7 @@ static void create_controls(HWND h)
 
     apply_layout();
     input_tab_load();
+    banner_sync();
 }
 
 /* Short hover help for the main window's buttons. A tooltip never takes
@@ -3705,6 +3863,8 @@ static void add_tooltips(HWND hwnd)
         {g.save, "Save the relay address and port of the route in use, and the shared rate and disarm settings."},
         {g.clear, "Clear the recent input list (kept in memory only)."},
         {g.updates_button, "Check for HIDway updates."},
+        {g.update_now, "Close HIDway and install the new version: the updater checks, downloads and installs it, then opens HIDway again (disarmed)."},
+        {g.update_later, "Hide this until HIDway is opened again."},
     };
     for (size_t i = 0; i < sizeof tips / sizeof tips[0]; i++) {
         if (!tips[i].h)
@@ -3975,6 +4135,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else {
             preview_fill();
             select_tab(g.preview_tab); /* --tab=NAME */
+            banner_sync();             /* --update-banner */
             if (g.shot_path[0])
                 SetTimer(hwnd, TIMER_SHOT, 900, NULL);
         }
@@ -4092,6 +4253,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_NET_READ:
         net_drain_status();
+        return 0;
+
+    case WM_UPDATE_RESULT:
+        update_result((int)wp, hw_update_check_tag());
         return 0;
 
     case WM_SEND_TICK:
@@ -4229,6 +4394,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             case ID_MONITOR:open_monitor();break;
             case ID_REPLAY:replay_choose();break;
             case ID_LOCAL_PICO:use_local_pico();break;
+            case ID_UPDATE_NOW: update_now(); break;
+            case ID_UPDATE_LATER: update_later(); break;
             case ID_UPDATES:
                 if(!g.preview){int result=hw_companion_open(hwnd,HW_COMPANION_UPDATES);
                     if(result!=HW_COMPANION_OK)MessageBoxW(hwnd,hw_companion_error(result),L"Updates unavailable",MB_OK|MB_ICONINFORMATION);}
@@ -4295,6 +4462,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g.last_status_us = hidway_now_us(); /* preview: link always fresh */
             }
             badge_refresh();
+            banner_sync(); /* hidden while armed, back after disarm */
             invalidate_readouts();
         } else if (wp == TIMER_PROBE) {
             monitor();
@@ -4377,6 +4545,19 @@ static void parse_args(const char *cmd)
         if (dpi) {
             int v = atoi(dpi + 6);
             g.preview_dpi = v >= 96 && v <= 384 ? (UINT)v : 0;
+        }
+        /* --update-banner[=vX.Y.Z]: show the update banner (no check, no updater) */
+        const char *banner = strstr(cmd, "--update-banner");
+        if (banner) {
+            char tag[HW_UPDATE_TAG_MAX] = "v0.6.1";
+            if (banner[15] == '=') {
+                size_t n = strcspn(banner + 16, " ");
+                if (n < sizeof tag) {
+                    memcpy(tag, banner + 16, n);
+                    tag[n] = 0;
+                }
+            }
+            update_result(HW_UPDATE_AVAILABLE, hw_update_tag_valid(tag) ? tag : "v0.6.1");
         }
     }
     const char *hot = strstr(cmd, "--hot=");
@@ -4490,6 +4671,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     ShowWindow(hwnd, g.shot_path[0] ? SW_SHOWNOACTIVATE : show);
     UpdateWindow(hwnd);
     if(replay.path[0])history_add('i',"Recording ready: click Replay to review and start");
+    update_check_start(); /* window up, disarmed; the check runs on its own thread */
 
     MSG m;
     while (GetMessage(&m, NULL, 0, 0) > 0) {

@@ -11,9 +11,11 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,LPWSTR command,int sho
     wchar_t *last=wcsrchr(folder,L'\\');if(!last)return 2;*last=0;
     n=GetSystemDirectoryW(powershell,1800);if(!n||n>=1800)return 2;
     wcscat(powershell,L"\\WindowsPowerShell\\v1.0\\powershell.exe");
-    const wchar_t *script=!wcscmp(command,L"--uninstall")?L"hidway-uninstall.ps1":!wcscmp(command,L"--updates")?L"hidway-updates.ps1":L"hidway-setup-gui.ps1";
+    /* --update-now (from the client's update banner): the updater window, which then installs by itself. */
+    int update_now=!wcscmp(command,L"--update-now");
+    const wchar_t *script=!wcscmp(command,L"--uninstall")?L"hidway-uninstall.ps1":!wcscmp(command,L"--updates")||update_now?L"hidway-updates.ps1":L"hidway-setup-gui.ps1";
     int smoke=!wcscmp(command,L"--smoke-test");
-    swprintf(args,2304,L"-NoProfile -STA -ExecutionPolicy Bypass -File \"%ls\\%ls\"%ls",folder,script,smoke?L" -SmokeTest":L"");
+    swprintf(args,2304,L"-NoProfile -STA -ExecutionPolicy Bypass -File \"%ls\\%ls\"%ls",folder,script,smoke?L" -SmokeTest":update_now?L" -AutoInstall":L"");
     wchar_t command_line[4400];swprintf(command_line,4400,L"\"%ls\" %ls",powershell,args);
     STARTUPINFOW startup={0};startup.cb=sizeof startup;PROCESS_INFORMATION process={0};
     /* No console, without SW_HIDE: hiding the first window also hides WPF. */
