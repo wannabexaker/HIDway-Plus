@@ -17,11 +17,69 @@ int hidway_net_peer_is_loopback(void);
 static int fixture_peer,fixture_save_ok=1,fixture_saves;
 static unsigned fixture_pico;
 static hidway_config_t fixture_saved;
+static unsigned fixture_pico_calls;
 int test_peer_is_loopback(void) { return fixture_peer; }
-unsigned test_local_pico_interfaces(const char *token) { (void)token; return fixture_pico; }
+unsigned test_local_pico_interfaces(const char *token) { (void)token; fixture_pico_calls++; return fixture_pico; }
 int test_config_save(const char *path,const hidway_config_t *cfg)
 {
     (void)path;fixture_saves++;fixture_saved=*cfg;return fixture_save_ok;
+}
+
+/* Hidden main-window fixture: commands, owner-draw and colour messages go to
+ * the production wnd_proc; WM_CREATE does not (no badge, tray, hotkeys or
+ * socket from window creation). */
+static LRESULT CALLBACK fixture_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_COMMAND || m == WM_DRAWITEM || m == WM_MEASUREITEM || m == WM_CTLCOLOREDIT ||
+        m == WM_CTLCOLORSTATIC || m == WM_CTLCOLORLISTBOX)
+        return wnd_proc(h, m, w, l);
+    return DefWindowProcA(h, m, w, l);
+}
+
+typedef struct { HWND h; int tab; } page_control;
+
+/* The control's own visibility, independent of the hidden fixture parent. */
+static int shown(HWND h);
+
+/* Controls of the selected tab shown, all others hidden, the always-visible
+ * ones (action row, tab strip) shown. Returns the number of mismatches. */
+static unsigned visibility_errors(const page_control *p, size_t n, const HWND *always, size_t na)
+{
+    unsigned errors = 0;
+    for (size_t i = 0; i < n; i++)
+        if (!p[i].h || shown(p[i].h) != (p[i].tab == g.tab))
+            errors++;
+    for (size_t i = 0; i < na; i++)
+        if (!shown(always[i]))
+            errors++;
+    return errors;
+}
+
+/* Every per-route value of `c` equals the remembered route `p`. */
+static int profile_matches(const hidway_route_profile_t *p, const hidway_config_t *c)
+{
+    return p->valid && !strcmp(p->target, c->target) && p->port == c->port &&
+           p->relay_keyboard == c->relay_keyboard && p->relay_mouse == c->relay_mouse &&
+           p->source_physical == c->source_physical && p->source_touchpad == c->source_touchpad &&
+           p->source_virtual == c->source_virtual && p->loopback_pointer_pico == c->loopback_pointer_pico &&
+           p->repeat_enabled == c->repeat_enabled && p->repeat_button == c->repeat_button &&
+           p->repeat_cps == c->repeat_cps && p->repeat_sources == c->repeat_sources &&
+           p->virtual_click_cps == c->virtual_click_cps;
+}
+
+/* Same per-route values in two configurations. */
+static int route_values_equal(const hidway_config_t *a, const hidway_config_t *b)
+{
+    hidway_route_profile_t p;
+    memset(&p, 0, sizeof p);
+    p.valid = 1;
+    strcpy(p.target, a->target);
+    p.port = a->port; p.relay_keyboard = a->relay_keyboard; p.relay_mouse = a->relay_mouse;
+    p.source_physical = a->source_physical; p.source_touchpad = a->source_touchpad;
+    p.source_virtual = a->source_virtual; p.loopback_pointer_pico = a->loopback_pointer_pico;
+    p.repeat_enabled = a->repeat_enabled; p.repeat_button = a->repeat_button; p.repeat_cps = a->repeat_cps;
+    p.repeat_sources = a->repeat_sources; p.virtual_click_cps = a->virtual_click_cps;
+    return profile_matches(&p, b);
 }
 
 static hidway_input_pkt_t output[16];
@@ -75,6 +133,26 @@ static void reset_client(void)
 static int shown(HWND h)
 {
     return h && (GetWindowLongPtrA(h, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
+/* A known Remote PC configuration for the window fixture, keeping its
+ * controls; preview (no hooks, no ini writes), DISARMED, on Control. */
+static void ui_state(void)
+{
+    hw_rec_free(&replay.file);memset(&replay,0,sizeof replay);
+    memset(&g.cfg, 0, sizeof g.cfg);
+    strcpy(g.cfg.target, "192.0.2.10");
+    g.cfg.port = 47800; g.cfg.send_rate_hz = 250; g.cfg.auto_disarm_ms = 3000;
+    g.cfg.relay_keyboard = g.cfg.relay_mouse = 1; g.cfg.source_physical = 1;
+    g.cfg.virtual_click_cps = g.cfg.repeat_cps = 10; g.cfg.repeat_sources = 1; g.cfg.history_enabled = 1;
+    g.preview = 1; g.armed = 0; g.net_ok = 1; g.session_id = 456;
+    output_count = input_count = input_at = 0;
+    fixture_saves = 0; fixture_save_ok = 1; fixture_peer = 0;
+    g.local_pico_notice[0] = 0;
+    if (g.local_pico_button) EnableWindow(g.local_pico_button, TRUE);
+    connection_fields_load();
+    select_tab(TAB_CONTROL);
+    input_tab_load();
 }
 
 static void queue_status(uint32_t session, uint32_t echoed_at)
@@ -308,79 +386,12 @@ int main(void)
     VERIFY(capture_events.count==2&&capture_events.events[0].w=='A'&&capture_events.events[1].w=='A');
     cap_active=0;capture_queue_clear();
 
-    /* Hidden native controls exercise validation and apply without hooks,
-     * sockets, file writes or foreground activation. */
-    reset_client();
-    g.dpi = 96;
-    g.inst = GetModuleHandleA(NULL);
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = options_proc;
-    wc.hInstance = g.inst;
-    wc.lpszClassName = "HIDwayOptionsFixture";
-    VERIFY(RegisterClassA(&wc) != 0);
-    HWND options = CreateWindowExA(0, wc.lpszClassName, "Options fixture", 0, 0, 0, 470, 470, NULL,
-                                   NULL, g.inst, NULL);
-    VERIFY(options != NULL);
-    g.options = options;
-    VERIFY(!IsWindowEnabled(g.pointer_route)); /* Another-PC always uses Pico motion */
-    SetWindowTextA(g.repeat_cps, "0");
-    options_proc(options, WM_COMMAND, MAKEWPARAM(ID_SAVE, BN_CLICKED), 0);
-    VERIFY(IsWindow(options) && g.cfg.repeat_cps == 10);
-    SetWindowTextA(g.repeat_cps, "15");
-    SetWindowTextA(g.click_cps, "7");
-    SendMessageA(g.route, CB_SETCURSEL, 1, 0);
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_ROUTE,CBN_SELCHANGE),0);
-    VERIFY(!IsWindowEnabled(g.repeat_source)&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
-    VERIFY(IsWindowEnabled(g.pointer_route));
-    SendMessageA(g.pointer_route,CB_SETCURSEL,1,0);
-    g.options_repeat = 1;
-    options_proc(options, WM_COMMAND, MAKEWPARAM(ID_SAVE, BN_CLICKED), 0);
-    VERIFY(!IsWindow(options) && g.cfg.repeat_enabled && g.cfg.repeat_cps == 15 &&
-           g.cfg.virtual_click_cps == 7 && g.cfg.loopback_mode&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&
-           g.cfg.loopback_pointer_pico);
-
-    /* The one-click preset never rewrites the Pi address, arms, or writes
-     * settings when either required USB collection or relay peer is missing. */
-    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
-    strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
-    g.cfg.source_touchpad=1;g.cfg.repeat_enabled=1;
-    g.cfg.loopback_pointer_pico=1;
-    options=CreateWindowExA(0,wc.lpszClassName,"Preset fixture",0,0,0,470,520,NULL,NULL,g.inst,NULL);
-    g.options=options;VERIFY(options!=NULL);
-    fixture_pico=HIDWAY_PICO_READY;fixture_peer=1;fixture_saves=0;
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-    VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves&&!g.armed);
-    fixture_peer=-1;
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-    VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves);
-    fixture_peer=0;
-    for(unsigned present=0;present<HIDWAY_PICO_READY;present++) {
-        fixture_pico=present;
-        options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-        VERIFY(IsWindow(options)&&!g.cfg.loopback_mode&&!fixture_saves);
-    }
-    fixture_pico=HIDWAY_PICO_READY;fixture_save_ok=0;
-    hidway_config_t before=g.cfg;
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-    VERIFY(IsWindow(options)&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&!g.armed);
-    /* Ordinary Apply also keeps runtime config unchanged on save failure. */
-    SendMessageA(g.route,CB_SETCURSEL,1,0);
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),0);
-    VERIFY(IsWindow(options)&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==2);
-    fixture_save_ok=1;
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-    VERIFY(!IsWindow(options)&&fixture_saves==3&&!g.armed);
-    VERIFY(g.cfg.loopback_mode&&g.cfg.source_virtual&&!g.cfg.loopback_pointer_pico&&!g.cfg.repeat_enabled);
-    VERIFY(g.cfg.source_physical&&g.cfg.source_touchpad&&input_source_mask()==HIDWAY_SOURCE_VIRTUAL);
-    VERIFY(g.cfg.relay_keyboard&&g.cfg.relay_mouse&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL);
-    VERIFY(!strcmp(g.cfg.target,"192.0.2.10")&&g.cfg.port==47800&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg));
-
     /* The visible HUD button uses the same production preset and does not
      * ARM, create a capture hook, send packets, or change the relay address. */
     reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
     strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
     g.cfg.source_touchpad=1;g.cfg.loopback_pointer_pico=1;g.cfg.repeat_enabled=1;
-    before=g.cfg;fixture_saves=0;fixture_peer=0;fixture_pico=HIDWAY_PICO_READY;
+    hidway_config_t before=g.cfg;fixture_saves=0;fixture_peer=0;fixture_pico=HIDWAY_PICO_READY;
     fixture_save_ok=0;
     wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
     VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&!g.armed&&output_count==0);
@@ -400,7 +411,7 @@ int main(void)
     g.edit[1]=CreateWindowExA(0,"EDIT","47800",0,0,0,120,24,NULL,NULL,g.inst,NULL);
     VERIFY(g.edit[0]&&g.edit[1]);
     wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
-    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&strstr(g.local_pico_notice,"Settings first"));
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&strstr(g.local_pico_notice,"Connection tab first"));
     SetWindowTextA(g.edit[0],g.cfg.target);SetWindowTextA(g.edit[1],"47801");
     wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
     VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1);
@@ -416,7 +427,9 @@ int main(void)
     wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
     VERIFY(fixture_saves==2&&!g.armed&&output_count==0&&!cap_active);
     VERIFY(g.cfg.loopback_mode&&g.cfg.source_virtual&&!g.cfg.loopback_pointer_pico&&!g.cfg.repeat_enabled);
-    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&g.cfg.source_physical&&g.cfg.source_touchpad);
+    /* the Remote PC route keeps its own choices (physical/touchpad, pointer, repeat) */
+    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&!g.cfg.source_physical&&!g.cfg.source_touchpad&&
+           profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_REMOTE],&before));
     VERIFY(g.cfg.relay_keyboard&&g.cfg.relay_mouse&&!strcmp(g.cfg.target,before.target)&&g.cfg.port==before.port);
     VERIFY(!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg)&&strstr(g.local_pico_notice,"Press ARM"));
     /* Visible button follows ARM state; the window stays hidden throughout. */
@@ -473,98 +486,300 @@ int main(void)
     wchar_t loadpath[]=L"C:\\test.hidrec";COPYDATASTRUCT data={RECORDING_IPC,sizeof loadpath,loadpath};VERIFY(!wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data));
     g.armed=0;VERIFY(wnd_proc(NULL,WM_COPYDATA,0,(LPARAM)&data)&&!wcscmp(replay.path,loadpath)&&!g.armed);
 
-    /* Hold to repeat greys out its button, source and speed (values kept),
-     * from the first open on; Cancel closes like the title-bar close. */
+    /* ---- Tabbed main window: hidden fixture with the production controls,
+     * no hooks, no ini writes (fixture save), no foreground activation. ---- */
     char text[64];
-    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
-    g.cfg.repeat_enabled=0;g.cfg.repeat_button=2;g.cfg.repeat_cps=12;g.cfg.repeat_sources=4;
-    options=CreateWindowExA(0,wc.lpszClassName,"Repeat fixture",0,0,0,470,540,NULL,NULL,g.inst,NULL);
-    g.options=options;VERIFY(options!=NULL);
-    VERIFY(!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
-    VERIFY(IsWindowEnabled(g.click_cps)&&IsWindowEnabled(g.route)&&!IsWindowEnabled(g.pointer_route));
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
-    VERIFY(g.options_repeat&&IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_cps));
-    VERIFY(SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
-    SendMessageA(g.route,CB_SETCURSEL,1,0);
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_ROUTE,CBN_SELCHANGE),(LPARAM)g.route);
-    VERIFY(!IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_cps));
-    SendMessageA(g.route,CB_SETCURSEL,0,0);
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_ROUTE,CBN_SELCHANGE),(LPARAM)g.route);
-    VERIFY(IsWindowEnabled(g.repeat_source));
-    options_proc(options,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
-    VERIFY(!g.options_repeat&&!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
-    GetWindowTextA(g.repeat_cps,text,sizeof text);
-    VERIFY(!strcmp(text,"12")&&SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
-    before=g.cfg;fixture_saves=0;
-    options_proc(options,WM_COMMAND,MAKEWPARAM(IDCANCEL,BN_CLICKED),0);
-    VERIFY(!IsWindow(options)&&!g.options&&!fixture_saves&&!memcmp(&before,&g.cfg,sizeof before));
-    g.cfg.repeat_enabled=1;
-    options=CreateWindowExA(0,wc.lpszClassName,"Repeat fixture",0,0,0,470,540,NULL,NULL,g.inst,NULL);
-    g.options=options;VERIFY(options!=NULL&&g.options_repeat);
-    VERIFY(IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_cps));
-    before=g.cfg;
-    options_proc(options,WM_CLOSE,0,0);
-    VERIFY(!IsWindow(options)&&!fixture_saves&&!memcmp(&before,&g.cfg,sizeof before));
-
-    /* Compact view hides RECENT INPUT and the settings fields without touching
-     * their values, keeps ARM / PANIC / Pico on this PC visible with their own
-     * enable rules (also while ARMED), never disarms, and saves only the choice. */
-    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
-    strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
-    WNDCLASSA hud={0};hud.lpfnWndProc=DefWindowProcA;hud.hInstance=g.inst;hud.lpszClassName="HIDwayHudFixture";
+    reset_client();g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
+    WNDCLASSA hud={0};hud.lpfnWndProc=fixture_proc;hud.hInstance=g.inst;hud.lpszClassName="HIDwayHudFixture";
     VERIFY(RegisterClassA(&hud)!=0);
     g.hwnd=CreateWindowExA(0,hud.lpszClassName,"HUD fixture",WIN_STYLE,0,0,200,200,NULL,NULL,g.inst,NULL);
     VERIFY(g.hwnd!=NULL&&!IsWindowVisible(g.hwnd));
     create_fonts();compute_layout();create_controls(g.hwnd);
-    HWND hidden[]={g.history,g.clear,g.save,g.edit[0],g.edit[1],g.edit[2],g.edit[3],
-                   g.cb[0],g.cb[1],g.cb[2],g.src[0],g.src[1],g.src[2]};
-    HWND kept[]={g.arm,g.panic,g.local_pico_button,g.options_button,g.monitor_button,g.replay_button,
-                 g.compact_button,g.updates_button};
-    const size_t n_hidden=sizeof hidden/sizeof hidden[0],n_kept=sizeof kept/sizeof kept[0];
-    for(size_t i=0;i<n_hidden;i++)VERIFY(shown(hidden[i]));
-    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
-    VERIFY(!g.compact&&g.L.H==S(LAYOUT_FULL_H)&&GetDlgCtrlID(g.compact_button)==ID_COMPACT);
-    GetWindowTextA(g.options_button,text,sizeof text);VERIFY(!strcmp(text,"Remote PC..."));
-    GetWindowTextA(g.compact_button,text,sizeof text);VERIFY(!strcmp(text,"Less"));
+    ui_state();
+    /* Existing command numbers are unchanged (tests and tools post them). */
+    VERIFY(ID_HISTORY==1001&&ID_TARGET==1003&&ID_CB_KBD==1007&&ID_SAVE==1010&&ID_ARM==1011&&ID_PANIC==1012&&
+           ID_OPTIONS==1016&&ID_MONITOR==1030&&ID_LOCAL_PICO==1032&&ID_UPDATES==1033&&ID_COMPACT==1034&&
+           ID_TABS==1035&&ID_INPUT_APPLY==1042);
+    VERIFY(GetDlgCtrlID(g.arm)==ID_ARM&&GetDlgCtrlID(g.panic)==ID_PANIC&&GetDlgCtrlID(g.local_pico_button)==ID_LOCAL_PICO&&
+           GetDlgCtrlID(g.save)==ID_SAVE&&GetDlgCtrlID(g.edit[0])==ID_TARGET&&GetDlgCtrlID(g.cb[2])==ID_CB_HIST&&
+           GetDlgCtrlID(g.repeat_cps)==ID_REPEAT_CPS&&GetDlgCtrlID(g.click_cps)==ID_CLICK_CPS&&GetDlgCtrlID(g.history)==ID_HISTORY);
+    page_control page[]={
+        {g.edit[0],TAB_CONNECTION},{g.edit[1],TAB_CONNECTION},{g.edit[2],TAB_CONNECTION},{g.edit[3],TAB_CONNECTION},
+        {g.save,TAB_CONNECTION},
+        {g.profile_button[0],TAB_INPUT},{g.profile_button[1],TAB_INPUT},{g.cb[0],TAB_INPUT},{g.cb[1],TAB_INPUT},
+        {g.src[0],TAB_INPUT},{g.src[1],TAB_INPUT},{g.src[2],TAB_INPUT},{g.pointer_route,TAB_INPUT},{g.repeat,TAB_INPUT},
+        {g.repeat_button,TAB_INPUT},{g.repeat_cps,TAB_INPUT},{g.repeat_source,TAB_INPUT},{g.click_cps,TAB_INPUT},
+        {g.input_apply,TAB_INPUT},
+        {g.monitor_button,TAB_TOOLS},{g.replay_button,TAB_TOOLS},{g.updates_button,TAB_TOOLS},{g.cb[2],TAB_TOOLS},
+        {g.clear,TAB_TOOLS},{g.history,TAB_TOOLS},
+    };
+    HWND always[]={g.arm,g.local_pico_button,g.panic,g.tabs};
+    const size_t n_page=sizeof page/sizeof page[0],n_always=sizeof always/sizeof always[0];
+    VERIFY(g.tab==TAB_CONTROL&&visibility_errors(page,n_page,always,n_always)==0);
+
+    /* Tab switching hides and restores controls with their values, never
+     * disarms, never saves; the action row keeps its enable rules (ARMED). */
     SetWindowTextA(g.edit[0],"192.0.2.99");SetWindowTextA(g.edit[2],"500");
     SendMessageA(g.history,LB_ADDSTRING,0,(LPARAM)"12:00:00.000\x1fW\x1f" "d");
-    hidway_config_t settings=g.cfg;fixture_saves=0;
-    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
-    VERIFY(g.compact&&g.cfg.compact&&fixture_saves==1&&fixture_saved.compact==1);
-    settings.compact=1;VERIFY(!memcmp(&settings,&g.cfg,sizeof settings)); /* edits are not applied */
-    for(size_t i=0;i<n_hidden;i++)VERIFY(!shown(hidden[i]));
-    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
-    VERIFY(IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic)&&IsWindowEnabled(g.local_pico_button));
-    VERIFY(g.L.H==S(LAYOUT_COMPACT_H)&&g.L.arm.bottom<g.L.H&&g.L.panic.bottom<g.L.H&&g.L.local_pico.bottom<g.L.H);
-    VERIFY(g.L.settings.bottom<=g.L.arm.top&&g.L.live.bottom<=g.L.settings.top);
-    GetWindowTextA(g.compact_button,text,sizeof text);VERIFY(!strcmp(text,"More"));
+    set_armed(1);VERIFY(g.armed); /* preview: no hooks or sender thread */
+    hidway_config_t settings=g.cfg;unsigned sent=output_count;
+    LRESULT history_rows=SendMessageA(g.history,LB_GETCOUNT,0,0);
+    for(int pass=0;pass<2;pass++)for(int t=0;t<TAB_COUNT;t++) {
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_TAB_CONTROL+t,BN_CLICKED),0);
+        VERIFY(g.tab==t&&g.armed&&visibility_errors(page,n_page,always,n_always)==0);
+        VERIFY(!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
+    }
+    VERIFY(!fixture_saves&&output_count==sent&&!memcmp(&settings,&g.cfg,sizeof settings));
     GetWindowTextA(g.edit[0],text,sizeof text);VERIFY(!strcmp(text,"192.0.2.99"));
     GetWindowTextA(g.edit[2],text,sizeof text);VERIFY(!strcmp(text,"500"));
-    VERIFY(SendMessageA(g.history,LB_GETCOUNT,0,0)==1&&g.cfg.relay_keyboard&&g.cfg.source_virtual);
-    g.preview=1; /* ARMED in the harness: no hooks or sender thread */
-    set_armed(1);VERIFY(g.armed&&!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
-    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
-    VERIFY(g.armed&&!g.compact&&!g.cfg.compact);
-    for(size_t i=0;i<n_hidden;i++)VERIFY(shown(hidden[i]));
-    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
-    VERIFY(!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
-    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),(LPARAM)g.compact_button);
-    VERIFY(g.armed&&g.compact);
-    for(size_t i=0;i<n_kept;i++)VERIFY(shown(kept[i]));
-    VERIFY(!IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm)&&IsWindowEnabled(g.panic));
+    VERIFY(history_rows>=2&&SendMessageA(g.history,LB_GETCOUNT,0,0)==history_rows); /* W + "Armed" */
+    /* Keyboard: the strip wants the arrows; Left/Right wrap, Home/End jump. */
+    select_tab(TAB_CONTROL);
+    VERIFY((SendMessageA(g.tabs,WM_GETDLGCODE,0,0)&DLGC_WANTARROWS)!=0&&(GetWindowLongPtrA(g.tabs,GWL_STYLE)&WS_TABSTOP));
+    SendMessageA(g.tabs,WM_KEYDOWN,VK_RIGHT,0);VERIFY(g.tab==TAB_CONNECTION);
+    SendMessageA(g.tabs,WM_KEYDOWN,VK_LEFT,0);SendMessageA(g.tabs,WM_KEYDOWN,VK_LEFT,0);VERIFY(g.tab==TAB_TOOLS);
+    SendMessageA(g.tabs,WM_KEYDOWN,VK_HOME,0);VERIFY(g.tab==TAB_CONTROL);
+    SendMessageA(g.tabs,WM_KEYDOWN,VK_END,0);VERIFY(g.tab==TAB_TOOLS&&g.armed&&visibility_errors(page,n_page,always,n_always)==0);
+    /* PANIC works from any tab and the action row follows ARM state. */
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PANIC,BN_CLICKED),(LPARAM)g.panic);
-    VERIFY(!g.armed&&g.compact&&IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm));
+    VERIFY(!g.armed&&g.tab==TAB_TOOLS&&IsWindowEnabled(g.local_pico_button)&&IsWindowEnabled(g.arm));
     GetWindowTextA(g.edit[0],text,sizeof text);VERIFY(!strcmp(text,"192.0.2.99"));
-    /* Start-up fallback: compact when the full window does not fit, without
-     * changing (or saving) the saved preference. */
-    g.cfg.compact=0;fixture_saves=0;
-    HMONITOR monitor=MonitorFromWindow(g.hwnd,MONITOR_DEFAULTTONEAREST);
-    g.preview_work_h=300;VERIFY(want_compact(monitor));
-    g.preview_work_h=5000;VERIFY(!want_compact(monitor));
-    g.cfg.compact=1;VERIFY(want_compact(monitor));g.cfg.compact=0;
-    g.preview_work_h=0;
-    set_compact(0,0);VERIFY(!g.compact&&shown(g.save));
-    set_compact(1,0);VERIFY(g.compact&&!g.cfg.compact&&!fixture_saves&&!shown(g.save));
+    /* The posted number of the retired Input options button opens the Input tab. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_OPTIONS,BN_CLICKED),0);VERIFY(g.tab==TAB_INPUT&&!g.armed);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),0);VERIFY(g.tab==TAB_INPUT&&!fixture_saves);
+    /* One size for every tab; the action row is below every page. It fits a
+     * 1366x768 work area at 100 % and a 1920x1080 one at 150 %. */
+    VERIFY(LAYOUT_H<=520&&g.L.H==S(LAYOUT_H)&&g.L.arm.bottom<g.L.H&&g.L.panic.bottom<g.L.H&&g.L.local_pico.bottom<g.L.H);
+    VERIFY(g.L.tabs.bottom<=g.L.page.top&&g.L.live.bottom<=g.L.arm.top&&g.L.settings.bottom<=g.L.arm.top&&
+           g.L.input.bottom<=g.L.arm.top&&g.L.recent.bottom<=g.L.arm.top&&g.L.status.bottom<=g.L.input.bottom);
+    RECT frame96={0,0,S(LAYOUT_W),S(LAYOUT_H)};AdjustWindowRectExForDpi(&frame96,WIN_STYLE,FALSE,0,96);
+    VERIFY(frame96.bottom-frame96.top<=728&&frame96.right-frame96.left<=1366);
+    g.dpi=144;create_fonts();compute_layout();apply_layout();
+    RECT frame144={0,0,g.L.W,g.L.H};AdjustWindowRectExForDpi(&frame144,WIN_STYLE,FALSE,0,144);
+    VERIFY(g.L.H==780&&frame144.bottom-frame144.top<=1032&&frame144.right-frame144.left<=1920);
+    g.dpi=96;create_fonts();compute_layout();apply_layout();
+    /* WAKE sits on the value line of a GAMING PC tile wide enough for it. */
+    VERIFY(g.L.tiles[3].right-g.L.tiles[3].left>=S(140)&&g.L.tiles[3].right<=g.L.stats.right-S(14));
+
+    /* ---- Input tab: greying, unapplied edits, validation, apply ---- */
+    ui_state();g.cfg.repeat_enabled=0;g.cfg.repeat_button=2;g.cfg.repeat_cps=12;g.cfg.repeat_sources=4;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_TAB_INPUT,BN_CLICKED),0);
+    VERIFY(!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
+    VERIFY(IsWindowEnabled(g.click_cps)&&!IsWindowEnabled(g.pointer_route)); /* Remote PC: Pico motion only */
+    VERIFY(IsWindowEnabled(g.src[0])&&IsWindowEnabled(g.src[1])&&IsWindowEnabled(g.src[2])&&!g.input_dirty);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    VERIFY(g.pending.repeat_enabled&&!g.cfg.repeat_enabled&&g.input_dirty);
+    VERIFY(IsWindowEnabled(g.repeat_button)&&IsWindowEnabled(g.repeat_source)&&IsWindowEnabled(g.repeat_cps));
+    VERIFY(SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    VERIFY(!g.pending.repeat_enabled&&!IsWindowEnabled(g.repeat_button)&&!IsWindowEnabled(g.repeat_source)&&!IsWindowEnabled(g.repeat_cps));
+    GetWindowTextA(g.repeat_cps,text,sizeof text);
+    VERIFY(!strcmp(text,"12")&&SendMessageA(g.repeat_button,CB_GETCURSEL,0,0)==2&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
+    /* Viewing and editing never disarm; leaving the tab drops what was not
+     * applied (reset from the saved values when the tab is entered again). */
+    set_armed(1);sent=output_count;before=g.cfg;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_CB_MOUSE,BN_CLICKED),(LPARAM)g.cb[1]);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    SetWindowTextA(g.click_cps,"3");
+    VERIFY(g.armed&&output_count==sent&&!g.pending.relay_mouse&&g.pending.source_touchpad&&cb_checked(ID_SRC_TOUCHPAD)&&
+           g.input_dirty&&!memcmp(&before,&g.cfg,sizeof before));
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_TAB_TOOLS,BN_CLICKED),0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_TAB_INPUT,BN_CLICKED),0);
+    GetWindowTextA(g.click_cps,text,sizeof text);
+    VERIFY(g.armed&&!fixture_saves&&!memcmp(&before,&g.cfg,sizeof before)&&!g.pending.repeat_enabled&&
+           g.pending.relay_mouse&&!g.pending.source_touchpad&&!g.input_dirty&&!strcmp(text,"10"));
+    /* Validation (1..25 per speed): nothing applied, nothing disarmed. */
+    SetWindowTextA(g.repeat_cps,"0");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(g.armed&&g.input_error&&strstr(g.input_status,"1 to 25")&&!memcmp(&before,&g.cfg,sizeof before)&&!fixture_saves);
+    SetWindowTextA(g.repeat_cps,"15");SetWindowTextA(g.click_cps,"26");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(g.armed&&g.input_error&&!memcmp(&before,&g.cfg,sizeof before));
+    /* Apply and save: disarms first (three RELEASE), then uses the values. */
+    SetWindowTextA(g.click_cps,"7");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    SendMessageA(g.repeat_button,CB_SETCURSEL,1,0);
+    /* Hold to repeat cannot name a source that is not ticked (Virtual is not):
+     * refused like a bad speed, nothing applied, nothing disarmed. */
+    output_count=0;
+    static const int unticked_sources[]={2,4,5}; /* Virtual, Physical + virtual, Touchpad + virtual */
+    for(size_t i=0;i<sizeof unticked_sources/sizeof unticked_sources[0];i++) {
+        SendMessageA(g.repeat_source,CB_SETCURSEL,(WPARAM)unticked_sources[i],0);
+        g.input_error=0;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+        VERIFY(g.armed&&output_count==0&&g.input_error&&strstr(g.input_status,"not ticked")&&
+               !memcmp(&before,&g.cfg,sizeof before)&&!fixture_saves&&g.input_dirty);
+    }
+    SendMessageA(g.repeat_source,CB_SETCURSEL,3,0); /* Physical + touchpad: both ticked */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.armed&&output_count==3&&output[2].type==HIDWAY_MSG_RELEASE&&!g.input_error&&!g.input_dirty);
+    VERIFY(g.cfg.repeat_enabled&&g.cfg.repeat_cps==15&&g.cfg.virtual_click_cps==7&&g.cfg.source_touchpad&&
+           g.cfg.repeat_button==1&&g.cfg.repeat_sources==3&&!g.cfg.loopback_mode&&g.cfg.relay_mouse);
+    /* "All selected sources" always fits, whatever is ticked. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    SendMessageA(g.repeat_source,CB_SETCURSEL,6,0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&g.cfg.repeat_sources==7&&!g.cfg.source_touchpad);
+    /* A source that is not ticked is fine while Hold to repeat is off. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    SendMessageA(g.repeat_source,CB_SETCURSEL,1,0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&!g.cfg.repeat_enabled&&g.cfg.repeat_sources==2);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&g.cfg.repeat_enabled&&g.cfg.source_touchpad&&g.cfg.repeat_sources==2);
+    /* Outside preview the same Apply writes hidway.ini... */
+    g.preview=0;SetWindowTextA(g.click_cps,"8");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(fixture_saves==1&&g.cfg.virtual_click_cps==8&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg));
+    VERIFY(profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_REMOTE],&g.cfg));
+    /* ...and a failed save changes nothing and says so. */
+    fixture_save_ok=0;before=g.cfg;SetWindowTextA(g.click_cps,"9");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(fixture_saves==2&&!memcmp(&before,&g.cfg,sizeof before)&&g.input_error&&strstr(g.input_status,"Could not save"));
+    fixture_save_ok=1;
+
+    /* ---- Connection tab Save: an invalid field is refused in the window
+     * (old value kept, nothing saved, not disarmed, no "Saved" flash). ---- */
+    ui_state();select_tab(TAB_CONNECTION);set_armed(1);VERIFY(g.armed);
+    before=g.cfg;output_count=0;
+    static const struct { int field; const char *text, *message; } bad_fields[]={
+        {0,"","relay address"},{0,"   ","relay address"},
+        {1,"0","port"},{1,"65536","port"},{1,"","port"},{1,"47x","port"},{1,"99999999999","port"},{1,"-5","port"},
+        {2,"0","rate"},{2,"9","rate"},{2,"1001","rate"},{2,"","rate"},
+        {3,"-1","disarm"},{3,"60001","disarm"},{3,"","disarm"},{3,"3s","disarm"},
+    };
+    for(size_t i=0;i<sizeof bad_fields/sizeof bad_fields[0];i++) {
+        connection_fields_load();VERIFY(!g.conn_status[0]&&!g.conn_error);
+        SetWindowTextA(g.edit[bad_fields[i].field],bad_fields[i].text);
+        g.saved_flash=0;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+        if(!strstr(g.conn_status,bad_fields[i].message))printf("connection field %d \"%s\": \"%s\"\n",
+            bad_fields[i].field,bad_fields[i].text,g.conn_status);
+        VERIFY(g.armed&&output_count==0&&g.conn_error&&strstr(g.conn_status,"not saved")&&
+               strstr(g.conn_status,bad_fields[i].message)&&!memcmp(&before,&g.cfg,sizeof before)&&
+               !fixture_saves&&!g.saved_flash);
+    }
+    /* Range ends are accepted (spaces around a number too); Save disarms. */
+    connection_fields_load();
+    SetWindowTextA(g.edit[1]," 65535 ");SetWindowTextA(g.edit[2],"1000");SetWindowTextA(g.edit[3],"0");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(!g.armed&&g.cfg.port==65535&&g.cfg.send_rate_hz==1000&&g.cfg.auto_disarm_ms==0&&!g.conn_status[0]&&
+           g.saved_flash&&g.cfg.profiles[HIDWAY_PROFILE_REMOTE].port==65535);
+    SetWindowTextA(g.edit[1],"1");SetWindowTextA(g.edit[2],"10");SetWindowTextA(g.edit[3],"60000");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(g.cfg.port==1&&g.cfg.send_rate_hz==10&&g.cfg.auto_disarm_ms==60000&&!g.conn_error);
+    /* A failed hidway.ini write changes nothing and says so in the window. */
+    ui_state();g.preview=0;select_tab(TAB_CONNECTION);fixture_save_ok=0;before=g.cfg;
+    SetWindowTextA(g.edit[2],"500");g.saved_flash=0;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(fixture_saves==1&&!memcmp(&before,&g.cfg,sizeof before)&&g.conn_error&&
+           strstr(g.conn_status,"Could not save")&&!g.saved_flash);
+    fixture_save_ok=1;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(fixture_saves==2&&g.cfg.send_rate_hz==500&&fixture_saved.send_rate_hz==500&&!g.conn_status[0]&&
+           !g.conn_error&&g.saved_flash&&!strcmp(fixture_saved.target,"192.0.2.10")&&fixture_saved.port==47800);
+    /* the status line is painted on the Connection tab in place of the hint */
+    connection_status("Settings not saved: port must be 1 to 65535.",1);
+    {
+        HDC sdc=GetDC(NULL),mdc=CreateCompatibleDC(sdc);
+        HBITMAP bm=CreateCompatibleBitmap(sdc,g.L.W,g.L.H);HGDIOBJ ob=SelectObject(mdc,bm);
+        RECT all={0,0,g.L.W,g.L.H};paint_content(mdc,all);
+        SelectObject(mdc,ob);DeleteObject(bm);DeleteDC(mdc);ReleaseDC(NULL,sdc);
+    }
+    connection_fields_load();VERIFY(!g.conn_status[0]); /* reloaded fields: hint again */
+
+    /* ---- Route profiles: switching stores the route left, restores the
+     * other route's own values, applies and saves. ---- */
+    ui_state();g.preview=0;
+    g.cfg.relay_mouse=0;g.cfg.source_touchpad=1;g.cfg.repeat_enabled=1;g.cfg.repeat_button=2;
+    g.cfg.repeat_cps=12;g.cfg.repeat_sources=3;g.cfg.virtual_click_cps=9;
+    hidway_config_t remote=g.cfg;
+    select_tab(TAB_INPUT);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_REMOTE,BN_CLICKED),(LPARAM)g.profile_button[0]);
+    VERIFY(!fixture_saves&&!g.cfg.loopback_mode); /* the route in use: nothing to do */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_GAMING,BN_CLICKED),(LPARAM)g.profile_button[1]);
+    VERIFY(fixture_saves==1&&g.cfg.loopback_mode==1&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg)&&!g.input_error);
+    /* first use: the "Pico on this PC" defaults, same relay, same speeds */
+    VERIFY(!strcmp(g.cfg.target,"192.0.2.10")&&g.cfg.port==47800&&g.cfg.relay_keyboard&&g.cfg.relay_mouse);
+    VERIFY(g.cfg.source_virtual&&!g.cfg.source_physical&&!g.cfg.source_touchpad&&!g.cfg.loopback_pointer_pico);
+    VERIFY(!g.cfg.repeat_enabled&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&g.cfg.repeat_cps==12&&g.cfg.virtual_click_cps==9);
+    VERIFY(profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_REMOTE],&remote));
+    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&!IsWindowEnabled(g.src[0])&&!IsWindowEnabled(g.src[1])&&
+           !IsWindowEnabled(g.src[2])&&IsWindowEnabled(g.pointer_route)&&cb_checked(ID_SRC_VIRTUAL)&&!cb_checked(ID_SRC_PHYSICAL));
+    /* Gaming PC: Virtual cannot be switched off, even by a queued click. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_VIRTUAL,BN_CLICKED),(LPARAM)g.src[2]);
+    VERIFY(g.pending.source_virtual&&!g.input_dirty);
+    /* Its own pointer, repeat, speeds, outputs and port. */
+    SendMessageA(g.pointer_route,CB_SETCURSEL,1,0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_CB_KBD,BN_CLICKED),(LPARAM)g.cb[0]);
+    SetWindowTextA(g.repeat_cps,"20");SetWindowTextA(g.click_cps,"5");
+    VERIFY(!IsWindowEnabled(g.repeat_source)&&SendMessageA(g.repeat_source,CB_GETCURSEL,0,0)==2);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(fixture_saves==2&&g.cfg.loopback_pointer_pico&&g.cfg.repeat_enabled&&g.cfg.repeat_cps==20&&
+           g.cfg.virtual_click_cps==5&&!g.cfg.relay_keyboard&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&g.cfg.source_virtual);
+    select_tab(TAB_CONNECTION);SetWindowTextA(g.edit[1],"47801");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save); /* reopens UDP, sends nothing */
+    VERIFY(fixture_saves==3&&g.cfg.port==47801&&g.cfg.profiles[HIDWAY_PROFILE_GAMING].port==47801);
+    hidway_config_t gaming=g.cfg;
+    /* Back to Remote PC: every Remote value returns, Gaming values are kept. */
+    select_tab(TAB_INPUT);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_REMOTE,BN_CLICKED),(LPARAM)g.profile_button[0]);
+    VERIFY(fixture_saves==4&&!g.cfg.loopback_mode&&route_values_equal(&remote,&g.cfg)&&
+           profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_GAMING],&gaming)&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg));
+    GetWindowTextA(g.edit[1],text,sizeof text);VERIFY(!strcmp(text,"47800"));
+    VERIFY(IsWindowEnabled(g.src[0])&&!IsWindowEnabled(g.pointer_route)&&g.pending.source_touchpad);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_GAMING,BN_CLICKED),(LPARAM)g.profile_button[1]);
+    VERIFY(fixture_saves==5&&g.cfg.loopback_mode&&route_values_equal(&gaming,&g.cfg)&&
+           profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_REMOTE],&remote));
+    /* Switching while ARMED disarms first; a failed save changes nothing. */
+    g.preview=1;set_armed(1);output_count=0;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_REMOTE,BN_CLICKED),(LPARAM)g.profile_button[0]);
+    VERIFY(!g.armed&&output_count==3&&output[2].type==HIDWAY_MSG_RELEASE&&!g.cfg.loopback_mode);
+    g.preview=0;fixture_save_ok=0;before=g.cfg;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_GAMING,BN_CLICKED),(LPARAM)g.profile_button[1]);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&g.input_error&&strstr(g.input_status,"Could not save"));
+    fixture_save_ok=1;hidway_net_close();
+
+    /* ---- Pico on this PC selects the Gaming PC route with its own saved
+     * values, shows the result on Control and never ARMs. ---- */
+    ui_state();g.preview=0;fixture_pico=HIDWAY_PICO_READY;
+    hidway_config_t routes=g.cfg;
+    hidway_profile_select(&routes,HIDWAY_PROFILE_GAMING);routes.loopback_pointer_pico=1;routes.repeat_enabled=1;
+    hidway_profile_select(&routes,HIDWAY_PROFILE_REMOTE);g.cfg=routes;
+    select_tab(TAB_INPUT);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),(LPARAM)g.local_pico_button);
+    VERIFY(g.tab==TAB_CONTROL&&fixture_saves==1&&g.cfg.loopback_mode&&g.cfg.loopback_pointer_pico&&g.cfg.repeat_enabled);
+    VERIFY(g.cfg.source_virtual&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&!g.armed&&output_count==0&&
+           strstr(g.local_pico_notice,"through Pico"));
+    /* A Gaming PC route with another relay address is refused, not rewritten. */
+    ui_state();g.preview=0;routes=g.cfg;
+    hidway_profile_select(&routes,HIDWAY_PROFILE_GAMING);strcpy(routes.target,"127.0.0.1");
+    hidway_profile_select(&routes,HIDWAY_PROFILE_REMOTE);g.cfg=routes;
+    before=g.cfg;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),(LPARAM)g.local_pico_button);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&!fixture_saves&&strstr(g.local_pico_notice,"127.0.0.1")&&!g.armed);
+
+    /* ---- Pico status: read-only refresh from the GUI timer, indication only. ---- */
+    COLORREF color;
+    g.pico_known=0;fixture_pico_calls=0;
+    VERIFY(!strcmp(pico_text(&color),"Checking..."));
+    static const struct { unsigned state; const char *text; } pico_states[]={
+        {0,"Not on this PC"},{HIDWAY_PICO_KEYBOARD,"Partly detected"},{HIDWAY_PICO_MOUSE,"Partly detected"},
+        {HIDWAY_PICO_READY,"On this PC"},{0,"Not on this PC"}};
+    for(size_t i=0;i<sizeof pico_states/sizeof pico_states[0];i++) {
+        fixture_pico=pico_states[i].state;pico_refresh();
+        VERIFY(!strcmp(pico_text(&color),pico_states[i].text)&&!g.armed&&!fixture_saves);
+    }
+    VERIFY(fixture_pico_calls==5);
+    g.pico_pending=1;pico_refresh();VERIFY(fixture_pico_calls==5);g.pico_pending=0; /* never while one runs */
+    VERIFY(TIMER_PICO!=TIMER_UI&&PICO_REFRESH_MS>=1000);
+    g.preview=1;set_armed(1);VERIFY(g.armed);set_armed(0); /* "Not on this PC" gates nothing */
+
     DestroyWindow(g.hwnd);g.hwnd=NULL;destroy_fonts();
     printf("Client regression tests: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

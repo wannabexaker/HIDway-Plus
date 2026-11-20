@@ -10,6 +10,20 @@ typedef struct {
     char text[40];
 } hidway_hotkey_t;
 
+/* What each route (Remote PC / Gaming PC) remembers on its own. */
+typedef struct {
+    int valid;              /* 0: not created yet; derived from the active values on first use */
+    char target[128];
+    int port;
+    int relay_keyboard, relay_mouse;
+    int source_physical, source_touchpad, source_virtual;
+    int loopback_pointer_pico;
+    int repeat_enabled, repeat_button, repeat_cps, repeat_sources;
+    int virtual_click_cps;
+} hidway_route_profile_t;
+
+enum { HIDWAY_PROFILE_REMOTE = 0, HIDWAY_PROFILE_GAMING = 1 };
+
 typedef struct {
     char target[128];       /* Tailscale IP / hostname of the relay */
     int port;               /* UDP port of hidwayd */
@@ -35,17 +49,30 @@ typedef struct {
     int window_x, window_y; /* last window position; INT_MIN = unset */
     int badge;              /* show the badge while disarmed (click to arm) */
     int badge_x, badge_y;   /* badge top centre on screen; INT_MIN = unset */
-    int compact;            /* 1 = compact main window (no recent list / settings fields) */
     char loopback_device[64]; /* Raw Input path token excluded from capture */
     char key_hex[80];       /* end-to-end key (64 hex chars); empty = encryption off */
+    /* Both routes, indexed by loopback_mode. The flat fields above always
+     * hold the route in use; profiles[loopback_mode] is refreshed from them
+     * by hidway_profile_store() and by every save. */
+    hidway_route_profile_t profiles[2];
 } hidway_config_t;
 
 /* Load from `path`. Missing file/keys keep defaults; always fully populated.
- * Returns 1 if a file was read, else 0. */
+ * The top-level keys describe the route in use; prefixed keys (remote.*,
+ * gaming.*) hold each route. A file without prefixed keys keeps every value
+ * and gets the other route derived from it. `compact` (older clients) is
+ * accepted and ignored. Returns 1 if a file was read, else 0. */
 int hidway_config_load(const char *path, hidway_config_t *cfg);
 
-/* Write the config back to `path`. Returns 1 on success. */
+/* Write the config back to `path` atomically. Returns 1 on success. */
 int hidway_config_save(const char *path, const hidway_config_t *cfg);
+
+/* Copy the flat (in use) route values into profiles[loopback_mode]. */
+void hidway_profile_store(hidway_config_t *cfg);
+
+/* Store the route in use, then make `mode` the route in use with its own
+ * remembered values (created from sensible defaults if it never existed). */
+void hidway_profile_select(hidway_config_t *cfg, int mode);
 
 /* Parse "ctrl+shift+f12" into a hotkey. Returns 1 on success. */
 int hidway_hotkey_parse(const char *s, hidway_hotkey_t *hk);

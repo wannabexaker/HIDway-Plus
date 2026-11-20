@@ -45,11 +45,6 @@ panic_hotkey = ctrl+alt+shift+end
 # 1 = always shown, 0 = shown only while armed.
 badge = 1
 
-# Compact main window: hides the recent-input list and the settings fields
-# (Less / More in the SETTINGS row). 0 = full window. HIDway also starts
-# compact, without changing this value, when the full window does not fit.
-compact = 0
-
 # Prevent the default HIDway Pico USB mouse from being captured again when
 # the Pico is plugged into this same PC. Change this if firmware VID/PID were
 # overridden at build time.
@@ -59,3 +54,12 @@ loopback_device = VID_CAFE&PID_4877
 # key file (created with `hidwayd --gen-key`, see docs/RELAY.md). Keep secret.
 # With a key every packet is sealed; a malformed key stops all sending.
 # key = <64-hex-characters>
+
+# Route profiles. The keys above always describe the route in use
+# (loopback_mode). HIDway also remembers each route on its own, under
+# remote.<key> and gaming.<key> for target, port, relay_keyboard, relay_mouse,
+# source_physical, source_touchpad, source_virtual, loopback_pointer_pico,
+# repeat_enabled, repeat_button, repeat_cps, repeat_sources and
+# virtual_click_cps. It writes them itself on the first save; without them,
+# the other route starts from the route in use (same relay address and port).
+# Switch routes on the Input tab (Remote PC / Gaming PC).

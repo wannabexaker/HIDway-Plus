@@ -98,6 +98,8 @@ int WINAPI GdipDrawLines(void *graphics, void *pen, const HW_PointF *points, int
 #define TIMER_PROBE 3
 #define TIMER_SAVED 4
 #define TIMER_SHOT  5
+#define TIMER_PICO  6 /* Pico-on-this-PC indication only; never on the 50 ms UI timer */
+#define PICO_REFRESH_MS 2000
 #define UI_REFRESH_MS 50
 #define PROBE_MS      400
 #define LINK_RECENT_US 900000u
@@ -121,13 +123,20 @@ enum {
     ID_SRC_PHYSICAL, ID_SRC_TOUCHPAD, ID_SRC_VIRTUAL,
     ID_OPTIONS, ID_ROUTE, ID_REPEAT, ID_REPEAT_BUTTON, ID_REPEAT_CPS, ID_REPEAT_SOURCE, ID_CLICK_CPS, ID_POINTER,
     IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO, ID_UPDATES,
-    ID_COMPACT /* new IDs go last: tests post commands by number */
+    ID_COMPACT, /* new IDs go last: tests post commands by number */
+    ID_TABS, ID_TAB_CONTROL, ID_TAB_CONNECTION, ID_TAB_INPUT, ID_TAB_TOOLS,
+    ID_PROFILE_REMOTE, ID_PROFILE_GAMING, ID_INPUT_APPLY
 };
+/* Retired with the tabbed window, numbers kept: ID_OPTIONS (the Input options
+ * window; a posted command now opens the Input tab), ID_ROUTE (its route combo,
+ * now ID_PROFILE_REMOTE / ID_PROFILE_GAMING) and ID_COMPACT (Less / More). */
 
-/* Logical (96 DPI) window sizes: full and compact layout. */
+enum { TAB_CONTROL, TAB_CONNECTION, TAB_INPUT, TAB_TOOLS, TAB_COUNT };
+static const char *const TAB_NAMES[TAB_COUNT] = {"Control", "Connection", "Input", "Tools"};
+
+/* Logical (96 DPI) window size; the same on every tab. */
 #define LAYOUT_W 520
-#define LAYOUT_FULL_H 706
-#define LAYOUT_COMPACT_H 398
+#define LAYOUT_H 520
 
 enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 
@@ -173,19 +182,23 @@ enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 
 typedef struct {
     int W, H;
-    RECT mark, pill;
+    /* every tab: header, tab strip, action row */
+    RECT mark, pill, tabs, page;
     int title_x, title_y, sub_y;
-    RECT stats, tiles[4];
-    RECT live;
-    RECT recent, clear, list;
-    RECT settings, save, frame[4];
-    int label_y;
-    RECT cb[3];
-    RECT src[3];
-    int hk_cy;
     RECT arm, panic, local_pico;
-    RECT updates, compact_btn, monitor_btn, replay_btn, options_btn;
-    int band_bottom;
+    /* Control */
+    RECT stats, tiles[4], live;
+    int info_cy;
+    /* Connection */
+    RECT settings, save, frame[4], conn_hint;
+    int label_y;
+    /* Input */
+    RECT input, apply, profile[2], cb[2], src[3], pointer, repeat, repeat_button, repeat_source;
+    RECT repeat_cps, click_cps, status; /* field frames and the status text */
+    int row_route, row_relay, row_sources, row_pointer, row_button, row_source, row_click, row_limited;
+    /* Tools */
+    RECT tools, monitor_btn, replay_btn, updates, recent, history_cb, clear, list;
+    int hk_cy;
 } layout_t;
 
 static struct {
@@ -193,11 +206,11 @@ static struct {
     int preview; /* 0 normal, 1 preview disarmed, 2 preview armed */
     char shot_path[MAX_PATH];
     char hot_list[96];
-    /* preview-only: --compact, --options, --dpi=N, --work-height=N (physical px) */
-    int preview_compact, preview_options, preview_work_h;
+    /* preview-only: --tab=NAME (or --options for the Input tab), --dpi=N */
+    int preview_tab;
     UINT preview_dpi;
 
-    int compact;     /* layout in use; g.cfg.compact is the saved preference */
+    int tab;         /* TAB_*; Control at every start */
     int in_sizemove; /* the user is dragging the window */
 
     int armed;
@@ -259,10 +272,23 @@ static struct {
     HINSTANCE inst;
     HWND hwnd;
     HWND history, clear, edit[4], cb[3], src[3], save, arm, panic;
-    HWND options,options_button,route,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps,options_hint;
-    HWND monitor_button,replay_button,updates_button,local_pico_button,compact_button,tooltip;
+    /* g.options stays NULL: the Input options window became the Input tab.
+     * Kept so the message loop and set_armed() are unchanged. */
+    HWND options,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps;
+    HWND tabs,profile_button[2],input_apply;
+    HWND monitor_button,replay_button,updates_button,local_pico_button,tooltip;
     char local_pico_notice[192];
-    int options_repeat;
+    /* Input tab: edits not applied yet (reset from g.cfg when the tab is
+     * entered), and its status / error line. */
+    hidway_config_t pending;
+    int input_dirty, input_error;
+    char input_status[160];
+    /* Connection tab: why the last Save was refused or failed (empty: the hint) */
+    int conn_error;
+    char conn_status[160];
+    /* Pico on this PC indication (read-only, GUI-thread timer) */
+    unsigned pico_state;
+    int pico_known, pico_pending;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
           f_btn, f_btn_big, f_chip;
     HICON mark_icon;
@@ -1932,90 +1958,90 @@ static RECT R(int l, int t, int r, int b)
     return x;
 }
 
+/* One window size for every tab. Header, tab strip and the ARM / Pico on
+ * this PC / PANIC row are the same on every tab; the page between them
+ * belongs to the selected tab. */
 static void compute_layout(void)
 {
     layout_t *L = &g.L;
-    const int W = LAYOUT_W, P = 18, XL = P + 14, XR = W - P - 14;
+    const int W = LAYOUT_W, P = 18, XL = P + 14, XR = W - P - 14, CX = 166;
 
     L->W = S(W);
-    L->mark = R(P, 18, P + 30, 48);
-    L->title_x = S(P + 42);
-    L->title_y = S(15);
-    L->sub_y = S(38);
-    /* State pill above the Updates button: the version beside the title gets
-     * the whole width up to the pill. */
-    L->pill = R(W - P - 140, 8, W - P, 34);
-    L->updates = R(W - P - 80, 38, W - P, 58);
+    L->H = S(LAYOUT_H);
+    L->mark = R(P, 14, P + 28, 42);
+    L->title_x = S(P + 40);
+    L->title_y = S(9);
+    L->sub_y = S(33);
+    L->pill = R(W - P - 140, 12, W - P, 38);
+    L->tabs = R(P, 56, W - P, 88);
+    L->page = R(0, 96, W, 456);
 
-    /* CONNECTION: title row + four stat tiles */
-    L->stats = R(P, 64, W - P, 164);
-    int tile_w = (XR - XL - 3 * 8) / 4;
+    L->arm = R(P, 462, 194, 508);
+    L->local_pico = R(202, 462, 344, 508);
+    L->panic = R(W - P - 150, 462, W - P, 508);
+
+    /* Control: CONNECTION (tiles, Pico, route) and LIVE INPUT. The GAMING PC
+     * tile gets the remaining width so its WAKE chip sits clear of the label
+     * and the value. */
+    L->stats = R(P, 100, W - P, 226);
+    int x = XL;
     for (int i = 0; i < 4; i++) {
-        int x = XL + i * (tile_w + 8);
-        L->tiles[i] = R(x, 100, x + tile_w, 150);
+        int w = i < 3 ? 96 : XR - x;
+        L->tiles[i] = R(x, 132, x + w, 182);
+        x += w + 8;
     }
+    L->info_cy = S(205);
+    L->live = R(P, 238, W - P, 334);
 
-    /* LIVE INPUT */
-    L->live = R(P, 176, W - P, 272);
-
-    /* RECENT INPUT */
-    L->recent = R(P, 284, W - P, 424);
-    L->clear = R(XR - 64, 290, XR, 314);
-    L->list = R(XL - 2, 322, XR + 2, 412);
-
-    /* SETTINGS: compact keeps only its header row of buttons, directly below
-     * LIVE INPUT; RECENT INPUT and the fields are hidden. */
-    int sy = g.compact ? 284 : 436, by = sy + 6;
-    L->settings = R(P, sy, W - P, g.compact ? sy + 36 : 628);
-    L->save = R(XR - 64, by, XR, by + 24);
-    L->compact_btn = R(104, by, 154, by + 24);
-    L->monitor_btn = R(160, by, 230, by + 24);
-    L->replay_btn = R(236, by, 306, by + 24);
-    L->options_btn = R(312, by, 418, by + 24);
-    L->label_y = S(474);
+    /* Connection */
+    L->settings = R(P, 100, W - P, 240);
+    L->save = R(XR - 64, 106, XR, 130);
+    L->label_y = S(140);
     const int fw[4] = {226, 72, 66, 72};
-    int x = XL - 2;
+    x = XL - 2;
     for (int i = 0; i < 4; i++) {
-        L->frame[i] = R(x, 492, x + fw[i], 522);
+        L->frame[i] = R(x, 158, x + fw[i], 188);
         x += fw[i] + 8;
     }
-    L->cb[0] = R(XL - 2, 534, XL + 108, 556);
-    L->cb[1] = R(XL + 116, 534, XL + 210, 556);
-    L->cb[2] = R(XL + 218, 534, XL + 312, 556);
-    L->src[0] = R(XL + 58, 562, XL + 154, 584);
-    L->src[1] = R(XL + 160, 562, XL + 260, 584);
-    L->src[2] = R(XL + 266, 562, XR, 584);
-    L->hk_cy = S(606);
+    L->conn_hint = R(XL, 198, XR, 236);
 
-    /* action bar */
-    int ay = g.compact ? sy + 50 : 642;
-    L->arm = R(P, ay, 194, ay + 46);
-    L->local_pico = R(202, ay, 344, ay + 46);
-    L->panic = R(W - P - 150, ay, W - P, ay + 46);
+    /* Input: the former Input options window plus Keyboard/Mouse/Sources.
+     * Combo rectangles include their drop-down list height. */
+    L->input = R(P, 100, W - P, 450);
+    L->apply = R(XR - 120, 106, XR, 130);
+    L->row_route = S(152);
+    L->profile[0] = R(CX, 138, 325, 166);
+    L->profile[1] = R(329, 138, XR, 166);
+    L->row_relay = S(183);
+    L->cb[0] = R(CX, 172, CX + 96, 194);
+    L->cb[1] = R(CX + 104, 172, CX + 190, 194);
+    L->row_sources = S(209);
+    L->src[0] = R(CX, 198, CX + 90, 220);
+    L->src[1] = R(CX + 96, 198, CX + 190, 220);
+    L->src[2] = R(CX + 196, 198, XR, 220);
+    L->row_pointer = S(240);
+    L->pointer = R(CX, 226, XR, 226 + 160);
+    L->repeat = R(XL - 2, 260, XL + 190, 282);
+    L->row_button = S(302);
+    L->repeat_button = R(CX, 288, 300, 288 + 180);
+    L->repeat_cps = R(428, 288, XR, 316);
+    L->row_source = S(336);
+    L->repeat_source = R(CX, 322, XR, 322 + 200);
+    L->row_click = S(370);
+    L->click_cps = R(CX, 356, CX + 60, 384);
+    L->row_limited = S(400);
+    L->status = R(XL, 412, XR, 448);
 
-    L->H = S(g.compact ? LAYOUT_COMPACT_H : LAYOUT_FULL_H);
-    L->band_bottom = S(274);
-}
-
-/* Would the full layout, with its frame, fit the work area of `mon`? */
-static int full_layout_fits(HMONITOR mon)
-{
-    MONITORINFO mi = {sizeof mi};
-    if (!mon || !GetMonitorInfoA(mon, &mi))
-        return 1;
-    int work_h = mi.rcWork.bottom - mi.rcWork.top;
-    if (g.preview && g.preview_work_h > 0)
-        work_h = g.preview_work_h;
-    RECT wr = {0, 0, S(LAYOUT_W), S(LAYOUT_FULL_H)};
-    AdjustWindowRectExForDpi(&wr, WIN_STYLE, FALSE, 0, g.dpi);
-    return wr.bottom - wr.top <= work_h;
-}
-
-/* Compact when saved so, or when the full window would not fit; the saved
- * preference itself is not changed by the fallback. */
-static int want_compact(HMONITOR mon)
-{
-    return g.cfg.compact || (g.preview && g.preview_compact) || !full_layout_fits(mon);
+    /* Tools */
+    L->tools = R(P, 100, W - P, 174);
+    L->monitor_btn = R(XR - 222, 106, XR - 152, 130);
+    L->replay_btn = R(XR - 146, 106, XR - 76, 130);
+    L->updates = R(XR - 70, 106, XR, 130);
+    L->hk_cy = S(152);
+    L->recent = R(P, 186, W - P, 450);
+    L->history_cb = R(XR - 160, 194, XR - 80, 216);
+    L->clear = R(XR - 64, 193, XR, 217);
+    L->list = R(XL - 2, 226, XR + 2, 438);
 }
 
 /* Keep the window, and above all its action row, inside the work area. */
@@ -2040,74 +2066,118 @@ static void keep_on_work_area(HWND hwnd)
 
 static void place(HWND h, RECT r)
 {
-    SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+    if (h)
+        SetWindowPos(h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/* A borderless edit vertically centred in its painted field frame. */
+static void place_field(HWND edit, RECT f, int eh)
+{
+    if (!edit)
+        return;
+    RECT e = {f.left + S(9), f.top + ((f.bottom - f.top) - eh) / 2, f.right - S(9), 0};
+    e.bottom = e.top + eh;
+    place(edit, e);
+    SendMessageA(edit, WM_SETFONT, (WPARAM)g.f_body, TRUE);
+    SendMessageA(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+}
+
+/* Controls of the other tabs are hidden: they keep their values, and hidden
+ * windows are skipped by the dialog keyboard navigation. The action row and
+ * the tab strip are never hidden. */
+static void show_tab_controls(void)
+{
+    struct { HWND h; int tab; } c[] = {
+        {g.edit[0], TAB_CONNECTION}, {g.edit[1], TAB_CONNECTION}, {g.edit[2], TAB_CONNECTION},
+        {g.edit[3], TAB_CONNECTION}, {g.save, TAB_CONNECTION},
+        {g.profile_button[0], TAB_INPUT}, {g.profile_button[1], TAB_INPUT}, {g.cb[0], TAB_INPUT},
+        {g.cb[1], TAB_INPUT}, {g.src[0], TAB_INPUT}, {g.src[1], TAB_INPUT}, {g.src[2], TAB_INPUT},
+        {g.pointer_route, TAB_INPUT}, {g.repeat, TAB_INPUT}, {g.repeat_button, TAB_INPUT},
+        {g.repeat_cps, TAB_INPUT}, {g.repeat_source, TAB_INPUT}, {g.click_cps, TAB_INPUT},
+        {g.input_apply, TAB_INPUT},
+        {g.monitor_button, TAB_TOOLS}, {g.replay_button, TAB_TOOLS}, {g.updates_button, TAB_TOOLS},
+        {g.cb[2], TAB_TOOLS}, {g.clear, TAB_TOOLS}, {g.history, TAB_TOOLS},
+    };
+    HWND focus = GetFocus();
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        if (!c[i].h)
+            continue;
+        int on = c[i].tab == g.tab;
+        if (!on && focus && (focus == c[i].h || IsChild(c[i].h, focus))) {
+            SetFocus(g.tabs ? g.tabs : g.arm); /* never leave the keyboard on a hidden control */
+            focus = NULL;
+        }
+        ShowWindow(c[i].h, on ? SW_SHOWNA : SW_HIDE);
+    }
 }
 
 static void apply_layout(void)
 {
     layout_t *L = &g.L;
-    RECT lr = L->list;
-    InflateRect(&lr, -S(4), -S(4));
-    place(g.history, lr);
-    SendMessageA(g.history, LB_SETITEMHEIGHT, 0, S(21));
-    place(g.clear, L->clear);
-    place(g.save, L->save);
-    place(g.options_button,L->options_btn);
-    place(g.monitor_button,L->monitor_btn);
-    place(g.updates_button,L->updates);
-    place(g.replay_button,L->replay_btn);
-    place(g.local_pico_button,L->local_pico);
-    if (g.compact_button) {
-        place(g.compact_button, L->compact_btn);
-        SetWindowTextA(g.compact_button, g.compact ? "More" : "Less");
-    }
-    place(g.arm, L->arm);
-    place(g.panic, L->panic);
-    for (int i = 0; i < 3; i++)
-        place(g.cb[i], L->cb[i]);
-    for (int i = 0; i < 3; i++)
-        place(g.src[i], L->src[i]);
-
     HDC dc = GetDC(g.hwnd);
     int eh = font_h(dc, g.f_body) + S(2);
     ReleaseDC(g.hwnd, dc);
-    for (int i = 0; i < 4; i++) {
-        RECT f = L->frame[i];
-        RECT e = {f.left + S(9), f.top + ((f.bottom - f.top) - eh) / 2, f.right - S(9), 0};
-        e.bottom = e.top + eh;
-        place(g.edit[i], e);
-        SendMessageA(g.edit[i], WM_SETFONT, (WPARAM)g.f_body, TRUE);
-        SendMessageA(g.edit[i], EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
-    }
 
-    /* Compact hides RECENT INPUT and the settings fields; they keep their
-     * values and states, and come back unchanged with More. */
-    HWND fields[] = {g.history, g.clear, g.save, g.edit[0], g.edit[1], g.edit[2], g.edit[3],
-                     g.cb[0], g.cb[1], g.cb[2], g.src[0], g.src[1], g.src[2]};
-    HWND focus = GetFocus();
-    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
-        if (!fields[i])
+    place(g.tabs, L->tabs);
+    place(g.arm, L->arm);
+    place(g.local_pico_button, L->local_pico);
+    place(g.panic, L->panic);
+
+    place(g.save, L->save);
+    for (int i = 0; i < 4; i++)
+        place_field(g.edit[i], L->frame[i], eh);
+
+    HWND combos[] = {g.pointer_route, g.repeat_button, g.repeat_source};
+    for (size_t i = 0; i < sizeof combos / sizeof combos[0]; i++) {
+        if (!combos[i])
             continue;
-        if (g.compact && focus == fields[i] && g.compact_button)
-            SetFocus(g.compact_button); /* never leave the keyboard on a hidden field */
-        ShowWindow(fields[i], g.compact ? SW_HIDE : SW_SHOWNA);
+        SendMessageA(combos[i], WM_SETFONT, (WPARAM)g.f_body, FALSE);
+        SendMessageA(combos[i], CB_SETITEMHEIGHT, (WPARAM)-1, S(22)); /* the closed box */
+        SendMessageA(combos[i], CB_SETITEMHEIGHT, 0, S(24));          /* list items */
     }
+    place(g.input_apply, L->apply);
+    for (int i = 0; i < 2; i++)
+        place(g.profile_button[i], L->profile[i]);
+    place(g.cb[0], L->cb[0]);
+    place(g.cb[1], L->cb[1]);
+    for (int i = 0; i < 3; i++)
+        place(g.src[i], L->src[i]);
+    place(g.pointer_route, L->pointer);
+    place(g.repeat, L->repeat);
+    place(g.repeat_button, L->repeat_button);
+    place(g.repeat_source, L->repeat_source);
+    place_field(g.repeat_cps, L->repeat_cps, eh);
+    place_field(g.click_cps, L->click_cps, eh);
+
+    place(g.monitor_button, L->monitor_btn);
+    place(g.replay_button, L->replay_btn);
+    place(g.updates_button, L->updates);
+    place(g.cb[2], L->history_cb);
+    place(g.clear, L->clear);
+    RECT lr = L->list;
+    InflateRect(&lr, -S(4), -S(4));
+    place(g.history, lr);
+    if (g.history)
+        SendMessageA(g.history, LB_SETITEMHEIGHT, 0, S(21));
+
+    show_tab_controls();
 }
 
+/* The header (state pill) and the page of the selected tab; the timer calls
+ * this every 50 ms. Child controls are clipped and repaint themselves. */
 static void invalidate_readouts(void)
 {
     if (!g.hwnd)
         return;
-    RECT rc = {0, 0, g.L.W, g.L.band_bottom};
+    RECT rc = {0, 0, g.L.W, g.L.page.bottom};
     InvalidateRect(g.hwnd, &rc, FALSE);
 }
 
 static void invalidate_fields(void)
 {
-    RECT rc = {g.L.frame[0].left - S(2), g.L.frame[0].top - S(2),
-               g.L.frame[3].right + S(2), g.L.frame[3].bottom + S(2)};
-    InvalidateRect(g.hwnd, &rc, FALSE);
+    if (g.hwnd)
+        InvalidateRect(g.hwnd, &g.L.page, FALSE);
 }
 
 /* ======================================================================== */
@@ -2214,6 +2284,21 @@ static void paint_header(HDC dc)
     SetTextCharacterExtra(dc, 0);
 }
 
+/* Pico on this PC, from the last read-only Raw Input inventory. */
+static const char *pico_text(COLORREF *color)
+{
+    if (!g.pico_known) { *color = C_TEXT3; return "Checking..."; }
+    if ((g.pico_state & HIDWAY_PICO_READY) == HIDWAY_PICO_READY) { *color = C_LIVE; return "On this PC"; }
+    if (g.pico_state & HIDWAY_PICO_READY) { *color = C_AMBER; return "Partly detected"; }
+    *color = C_TEXT3;
+    return "Not on this PC";
+}
+
+static const char *route_name(int loopback)
+{
+    return loopback ? "Gaming PC" : "Remote PC";
+}
+
 static void paint_stats(HDC dc)
 {
     layout_t *L = &g.L;
@@ -2286,12 +2371,27 @@ static void paint_stats(HDC dc)
         tracked(dc, g.f_section, C_TEXT3, t.left + S(11), t.top + S(8), names[i]);
         text_at(dc, g.f_tile, i == 3 ? tc : live[i] ? C_TEXT : C_TEXT3, t.left + S(11), t.top + S(23), v[i]);
     }
-    /* A click on the tile wakes the target; the chip says so. */
+    /* A click on the tile wakes the target; the chip says so. It sits on the
+     * value line at the right, below the label, clear of the longest value. */
     if (wake_offered() && !waking()) {
         RECT t = L->tiles[3];
         int cw = text_w(dc, g.f_chip, "WAKE") + 2 * S(8);
-        chip(dc, t.right - S(8) - cw, t.top + S(26), S(18), "WAKE", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
+        chip(dc, t.right - S(8) - cw, t.top + S(34), S(18), "WAKE", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
     }
+
+    /* Pico on this PC (indication only) and the route in use */
+    cy = L->info_cy;
+    int x = L->stats.left + S(14), fh = font_h(dc, g.f_section);
+    tracked(dc, g.f_section, C_TEXT3, x, cy - fh / 2, "PICO");
+    x += tracked_w(dc, g.f_section, "PICO") + S(10);
+    COLORREF pc;
+    const char *pt = pico_text(&pc);
+    dot(dc, x + S(3), cy, S(3), pc);
+    text_vc(dc, g.f_label, pc == C_TEXT3 ? C_TEXT2 : pc, x + S(12), cy, pt);
+    x = L->tiles[2].left;
+    tracked(dc, g.f_section, C_TEXT3, x, cy - fh / 2, "ROUTE");
+    x += tracked_w(dc, g.f_section, "ROUTE") + S(10);
+    text_vc(dc, g.f_label, C_TEXT, x, cy, route_name(g.cfg.loopback_mode));
 }
 
 static void paint_live(HDC dc)
@@ -2377,51 +2477,121 @@ static void paint_live(HDC dc)
     text_vc(dc, g.f_mono, C_TEXT2, x == cx0 ? cx0 : x + S(4), cy, mv);
 }
 
-static void paint_recent(HDC dc)
+/* A painted field frame around a borderless edit. */
+static void field_frame(HDC dc, RECT f, int id, int enabled)
+{
+    round_rect(dc, f, S(7), C_FIELD, enabled && g.focus_id == id ? C_FOCUS_BD : C_FIELD_BD);
+}
+
+static void paint_connection(HDC dc)
 {
     layout_t *L = &g.L;
+    card(dc, L->settings, "RELAY");
+    char route[64];
+    snprintf(route, sizeof route, "%s route", route_name(g.cfg.loopback_mode));
+    int tx = L->settings.left + S(14) + tracked_w(dc, g.f_section, "RELAY") + S(10);
+    chip(dc, tx, title_cy(L->settings), S(18), route, C_FIELD, C_FIELD_BD, C_TEXT2);
+
+    static const char *labels[4] = {"Relay address", "Port", "Rate (Hz)", "Disarm (ms)"};
+    for (int i = 0; i < 4; i++) {
+        text_at(dc, g.f_label, C_TEXT2, L->frame[i].left + S(2), L->label_y, labels[i]);
+        field_frame(dc, L->frame[i], ID_TARGET + i, 1);
+    }
+    if (g.conn_status[0]) { /* a refused or failed Save, in place of the hint */
+        text_in(dc, g.f_label, g.conn_error ? C_WARN : C_TEXT2, L->conn_hint, DT_LEFT | DT_WORDBREAK,
+                g.conn_status);
+        return;
+    }
+    char hint[200];
+    snprintf(hint, sizeof hint,
+             "Relay address and port belong to the %s route; rate and disarm are shared "
+             "by both routes. Save disarms first.", route_name(g.cfg.loopback_mode));
+    text_in(dc, g.f_label, C_TEXT3, L->conn_hint, DT_LEFT | DT_WORDBREAK, hint);
+}
+
+static void paint_input(HDC dc)
+{
+    layout_t *L = &g.L;
+    const int XL = L->input.left + S(14), sub = XL + S(16);
+    int loop = g.cfg.loopback_mode != 0, rep = g.pending.repeat_enabled != 0;
+    card(dc, L->input, "INPUT");
+    if (g.input_dirty) {
+        int tx = XL + tracked_w(dc, g.f_section, "INPUT") + S(10);
+        text_vc(dc, g.f_label, C_AMBER, tx, title_cy(L->input), "not applied");
+    }
+
+    struct { const char *text; int x, cy, on; } labels[] = {
+        {"Send input to", XL, L->row_route, 1},
+        {"Relay", XL, L->row_relay, 1},
+        {"Sources", XL, L->row_sources, 1},
+        {"Gaming PC pointer", XL, L->row_pointer, loop},
+        {"Button", sub, L->row_button, rep},
+        {"Repeat clicks/sec", L->repeat_button.right + S(16), L->row_button, rep},
+        {"Repeat source", sub, L->row_source, rep && !loop},
+        {"Virtual clicks/sec", XL, L->row_click, 1},
+    };
+    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++)
+        text_vc(dc, g.f_label, labels[i].on ? C_TEXT2 : C_TEXT3, labels[i].x, labels[i].cy, labels[i].text);
+    text_vc(dc, g.f_label, C_TEXT3, L->click_cps.right + S(10), L->row_click, "1-25 per button");
+    field_frame(dc, L->repeat_cps, ID_REPEAT_CPS, rep);
+    field_frame(dc, L->click_cps, ID_CLICK_CPS, 1);
+
+    char limited[96];
+    snprintf(limited, sizeof limited, "Last ARM: %lu extra click attempts limited", (unsigned long)g.last_limited);
+    text_vc(dc, g.f_label, C_TEXT3, XL, L->row_limited, limited);
+
+    const char *status = g.input_status;
+    if (!status[0])
+        status = g.input_dirty ? "Changes not applied yet. Apply and save disarms first, then saves."
+               : loop ? "Gaming PC: virtual input only; Physical and Touchpad stay local. Apply and "
+                        "save disarms first; changes not applied are dropped when you leave this tab."
+                      : "Apply and save disarms first; changes not applied are dropped when you leave "
+                        "this tab. Hold to repeat replaces dragging for its button.";
+    text_in(dc, g.f_label, g.input_error ? C_WARN : C_TEXT3, L->status, DT_LEFT | DT_WORDBREAK, status);
+}
+
+static void paint_tools(HDC dc)
+{
+    layout_t *L = &g.L;
+    card(dc, L->tools, "TOOLS");
+
+    /* hotkeys as keycaps */
+    int x = L->tools.left + S(14), cy = L->hk_cy, ch = S(20), gap = S(4);
+    if (!g.toggle_hk_ok) {
+        char hk[48], msg[128];
+        hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
+        snprintf(msg, sizeof msg, "Toggle hotkey %s is in use — set toggle_hotkey in hidway.ini", hk);
+        text_vc(dc, g.f_label, C_WARN, x, cy, msg);
+    } else {
+        const char *groups[2] = {g.cfg.toggle.text, g.cfg.panic.text};
+        const char *gl[2] = {"Toggle", "Panic"};
+        for (int k = 0; k < 2; k++) {
+            text_vc(dc, g.f_label, C_TEXT3, x, cy, gl[k]);
+            x += text_w(dc, g.f_label, gl[k]) + S(8);
+            char tok[6][12];
+            int n = hotkey_tokens(groups[k], tok);
+            for (int i = 0; i < n; i++)
+                x += chip(dc, x, cy, ch, tok[i], C_CHIP, C_CHIP_BD, C_TEXT2) + gap;
+            x += S(18);
+        }
+    }
+
     card(dc, L->recent, "RECENT INPUT");
     int tw = tracked_w(dc, g.f_section, "RECENT INPUT");
     text_vc(dc, g.f_label, C_TEXT3, L->recent.left + S(14) + tw + S(10), title_cy(L->recent), "memory only");
     round_rect(dc, L->list, S(7), C_FIELD, C_FIELD_BD);
 }
 
-static void paint_settings(HDC dc)
+/* The whole client area except the child controls, into `dc`. */
+static void paint_content(HDC dc, RECT cr)
 {
-    layout_t *L = &g.L;
-    card(dc, L->settings, "SETTINGS");
-    if (g.compact) /* only the header row of buttons */
-        return;
-
-    static const char *labels[4] = {"Relay address", "Port", "Rate (Hz)", "Disarm (ms)"};
-    for (int i = 0; i < 4; i++) {
-        text_at(dc, g.f_label, C_TEXT2, L->frame[i].left + S(2), L->label_y, labels[i]);
-        int focused = g.focus_id == ID_TARGET + i;
-        round_rect(dc, L->frame[i], S(7), C_FIELD, focused ? C_FOCUS_BD : C_FIELD_BD);
-    }
-
-    text_vc(dc, g.f_label, C_TEXT3, L->settings.left + S(14),
-            (L->src[0].top + L->src[0].bottom) / 2, "Sources");
-
-    /* hotkeys as keycaps */
-    int x = L->frame[0].left + S(2), cy = L->hk_cy, ch = S(20), gap = S(4);
-    if (!g.toggle_hk_ok) {
-        char hk[48], msg[128];
-        hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
-        snprintf(msg, sizeof msg, "Toggle hotkey %s is in use — set toggle_hotkey in hidway.ini", hk);
-        text_vc(dc, g.f_label, C_WARN, x, cy, msg);
-        return;
-    }
-    const char *groups[2] = {g.cfg.toggle.text, g.cfg.panic.text};
-    const char *gl[2] = {"Toggle", "Panic"};
-    for (int k = 0; k < 2; k++) {
-        text_vc(dc, g.f_label, C_TEXT3, x, cy, gl[k]);
-        x += text_w(dc, g.f_label, gl[k]) + S(8);
-        char tok[6][12];
-        int n = hotkey_tokens(groups[k], tok);
-        for (int i = 0; i < n; i++)
-            x += chip(dc, x, cy, ch, tok[i], C_CHIP, C_CHIP_BD, C_TEXT2) + gap;
-        x += S(18);
+    fill_solid(dc, cr, C_BG);
+    paint_header(dc);
+    switch (g.tab) {
+    case TAB_CONTROL: paint_stats(dc); paint_live(dc); break;
+    case TAB_CONNECTION: paint_connection(dc); break;
+    case TAB_INPUT: paint_input(dc); break;
+    default: paint_tools(dc); break;
     }
 }
 
@@ -2438,26 +2608,120 @@ static void paint(HWND hwnd)
     HDC dc = CreateCompatibleDC(wdc);
     HBITMAP bmp = CreateCompatibleBitmap(wdc, cr.right, cr.bottom);
     HGDIOBJ obmp = SelectObject(dc, bmp);
-
-    fill_solid(dc, cr, C_BG);
-    RECT tmp;
-    RECT band = {0, 0, cr.right, g.L.band_bottom};
-    if (IntersectRect(&tmp, &ps.rcPaint, &band)) {
-        paint_header(dc);
-        paint_stats(dc);
-        paint_live(dc);
-    }
-    if (!g.compact && IntersectRect(&tmp, &ps.rcPaint, &g.L.recent))
-        paint_recent(dc);
-    if (IntersectRect(&tmp, &ps.rcPaint, &g.L.settings))
-        paint_settings(dc);
-
+    paint_content(dc, cr);
     BitBlt(wdc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
            ps.rcPaint.bottom - ps.rcPaint.top, dc, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
     SelectObject(dc, obmp);
     DeleteObject(bmp);
     DeleteDC(dc);
     EndPaint(hwnd, &ps);
+}
+
+/* ---- tab strip ----------------------------------------------------------- */
+
+/* A custom child control: one tab stop; Left/Right/Home/End (and Ctrl+Tab
+ * while it has the focus) pick a tab. It reports a choice to the main window
+ * as WM_COMMAND ID_TAB_CONTROL + index, the same command the tests post. */
+static int tab_hot = -1;
+
+static void tabs_pick(HWND h, int t)
+{
+    if (t >= 0 && t < TAB_COUNT)
+        SendMessageA(GetParent(h), WM_COMMAND, MAKEWPARAM(ID_TAB_CONTROL + t, BN_CLICKED), (LPARAM)h);
+}
+
+static int tabs_hit(HWND h, int x)
+{
+    RECT r;
+    GetClientRect(h, &r);
+    if (r.right <= 0)
+        return -1;
+    int t = x * TAB_COUNT / r.right;
+    return t < 0 ? 0 : t >= TAB_COUNT ? TAB_COUNT - 1 : t;
+}
+
+static void paint_tabs(HWND h, HDC wdc)
+{
+    RECT r;
+    GetClientRect(h, &r);
+    if (r.right <= 0 || r.bottom <= 0)
+        return;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    fill_solid(dc, r, C_BG);
+    round_rect(dc, r, S(9), C_CARD, C_CARD_BD);
+    int focus = GetFocus() == h && !(SendMessageA(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+    for (int i = 0; i < TAB_COUNT; i++) {
+        RECT t = {r.right * i / TAB_COUNT + S(3), S(3), r.right * (i + 1) / TAB_COUNT - S(3), r.bottom - S(3)};
+        if (i == g.tab)
+            round_rect(dc, t, S(7), C_SEC_H, focus ? C_FOCUS_BD : C_SEC_BD);
+        else if (i == tab_hot)
+            round_rect(dc, t, S(7), C_SEC, C_SEC);
+        text_in(dc, g.f_btn, i == g.tab ? C_WHITE : i == tab_hot ? C_TEXT : C_TEXT2, t,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE, TAB_NAMES[i]);
+    }
+    BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+}
+
+static LRESULT CALLBACK tabs_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_GETDLGCODE: {
+        LRESULT code = DLGC_WANTARROWS;
+        const MSG *m = (const MSG *)lp;
+        if (m && m->message == WM_KEYDOWN && m->wParam == VK_TAB && GetKeyState(VK_CONTROL) < 0)
+            code |= DLGC_WANTTAB; /* Ctrl+Tab picks the next tab; plain Tab moves on */
+        return code;
+    }
+    case WM_KEYDOWN: {
+        int t = g.tab, n = TAB_COUNT;
+        if (wp == VK_LEFT) t = (t + n - 1) % n;
+        else if (wp == VK_RIGHT) t = (t + 1) % n;
+        else if (wp == VK_HOME) t = 0;
+        else if (wp == VK_END) t = n - 1;
+        else if (wp == VK_TAB && GetKeyState(VK_CONTROL) < 0) t = GetKeyState(VK_SHIFT) < 0 ? (t + n - 1) % n : (t + 1) % n;
+        else break;
+        tabs_pick(h, t);
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+        tabs_pick(h, tabs_hit(h, (short)LOWORD(lp)));
+        return 0;
+    case WM_MOUSEMOVE: {
+        int t = tabs_hit(h, (short)LOWORD(lp));
+        if (t != tab_hot) {
+            tab_hot = t;
+            TRACKMOUSEEVENT tme = {sizeof tme, TME_LEAVE, h, 0};
+            TrackMouseEvent(&tme);
+            InvalidateRect(h, NULL, FALSE);
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        tab_hot = -1;
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    case WM_SETFOCUS: case WM_KILLFOCUS: case WM_UPDATEUISTATE:
+        InvalidateRect(h, NULL, FALSE);
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        paint_tabs(h, dc);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_PRINTCLIENT:
+        paint_tabs(h, (HDC)wp);
+        return 0;
+    }
+    return DefWindowProcA(h, msg, wp, lp);
 }
 
 /* ---- owner-drawn controls ---------------------------------------------- */
@@ -2468,16 +2732,21 @@ static int is_checkbox(int id)
            id == ID_SRC_PHYSICAL || id == ID_SRC_TOUCHPAD || id == ID_SRC_VIRTUAL || id==ID_REPEAT;
 }
 
+/* Input tab boxes show the edits not applied yet (g.pending); History, on
+ * the Tools tab, applies at once as before. In the Gaming PC route the
+ * Physical / Touchpad boxes show off and Virtual shows on: that is what the
+ * route captures, whatever the boxes remember for the Remote PC route. */
 static int cb_checked(int id)
 {
-    if(id==ID_REPEAT)return g.options_repeat;
-    if(g.cfg.loopback_mode&&(id==ID_SRC_PHYSICAL||id==ID_SRC_TOUCHPAD))return 0;
-    if (id == ID_CB_KBD) return g.cfg.relay_keyboard;
-    if (id == ID_CB_MOUSE) return g.cfg.relay_mouse;
     if (id == ID_CB_HIST) return g.cfg.history_enabled;
-    if (id == ID_SRC_PHYSICAL) return g.cfg.source_physical;
-    if (id == ID_SRC_TOUCHPAD) return g.cfg.source_touchpad;
-    return g.cfg.source_virtual;
+    if (id == ID_REPEAT) return g.pending.repeat_enabled;
+    if (g.cfg.loopback_mode && (id == ID_SRC_PHYSICAL || id == ID_SRC_TOUCHPAD)) return 0;
+    if (g.cfg.loopback_mode && id == ID_SRC_VIRTUAL) return 1;
+    if (id == ID_CB_KBD) return g.pending.relay_keyboard;
+    if (id == ID_CB_MOUSE) return g.pending.relay_mouse;
+    if (id == ID_SRC_PHYSICAL) return g.pending.source_physical;
+    if (id == ID_SRC_TOUCHPAD) return g.pending.source_touchpad;
+    return g.pending.source_virtual;
 }
 
 static void draw_button(const DRAWITEMSTRUCT *d)
@@ -2493,12 +2762,9 @@ static void draw_button(const DRAWITEMSTRUCT *d)
     bool down = (d->itemState & ODS_SELECTED) != 0;
     bool focus = (d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT);
 
-    /* paint what is behind the control first: no default-grey corners. The
-     * Input options window has no cards, only the window background. */
-    HWND parent = GetParent(d->hwndItem);
-    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_UPDATES ||
-                       (id == ID_LOCAL_PICO && d->hwndItem == g.local_pico_button) ||
-                       (g.options && parent == g.options)) ? C_BG : C_CARD);
+    /* paint what is behind the control first: no default-grey corners. Only
+     * the action row sits on the window background; the rest is on cards. */
+    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_LOCAL_PICO) ? C_BG : C_CARD);
 
     char label[32];
     GetWindowTextA(d->hwndItem, label, sizeof label);
@@ -2554,6 +2820,30 @@ static void draw_button(const DRAWITEMSTRUCT *d)
             tx = hot ? RGB(255, 186, 178) : C_DNG_TX;
             f = g.f_btn_big;
             rad = S(10);
+        } else if (id == ID_PROFILE_REMOTE || id == ID_PROFILE_GAMING) {
+            /* two-way route selector: the route in use is lit, with a dot */
+            int on = (id == ID_PROFILE_GAMING) == (g.cfg.loopback_mode != 0);
+            fill = on ? C_CHIP : down ? C_SEC : hot ? C_SEC_H : C_FIELD;
+            bd = on || hot ? C_FOCUS_BD : C_FIELD_BD;
+            tx = on || hot ? C_WHITE : C_TEXT2;
+            round_rect(dc, lr, rad, fill, bd);
+            if (focus) {
+                RECT fr = lr;
+                InflateRect(&fr, -S(3), -S(3));
+                round_rect(dc, fr, rad - S(2), C_FOCUS_BD, C_FOCUS_BD);
+                InflateRect(&fr, -S(1), -S(1));
+                round_rect(dc, fr, rad - S(3), fill, fill);
+            }
+            int tw = text_w(dc, f, label), dd = on ? S(8) + S(8) : 0;
+            int x = (w - tw - dd) / 2;
+            if (on)
+                dot(dc, x + S(4), h / 2, S(4), C_LIVE);
+            text_vc(dc, f, tx, x + dd, h / 2, label);
+            BitBlt(d->hDC, r.left, r.top, w, h, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, ob);
+            DeleteObject(bm);
+            DeleteDC(dc);
+            return;
         } else {
             fill = down ? C_SEC : hot ? C_SEC_H : C_SEC;
             bd = hot ? C_FOCUS_BD : C_SEC_BD;
@@ -2655,19 +2945,20 @@ static LRESULT CALLBACK list_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return DefWindowProcA(h, msg, wp, lp);
     /* Ask the original proc directly: SendMessage(LB_GETCOUNT) here would
      * re-enter this function forever. */
-    int empty = (msg == WM_PAINT || msg == WM_ERASEBKGND) &&
+    int empty = (msg == WM_PAINT || msg == WM_ERASEBKGND || msg == WM_PRINTCLIENT) &&
                 CallWindowProcA(orig, h, LB_GETCOUNT, 0, 0) == 0;
     if (msg == WM_ERASEBKGND && empty)
         return 1;
-    if (msg == WM_PAINT && empty) {
+    if ((msg == WM_PAINT || msg == WM_PRINTCLIENT) && empty) {
         PAINTSTRUCT ps;
-        HDC dc = BeginPaint(h, &ps);
+        HDC dc = msg == WM_PAINT ? BeginPaint(h, &ps) : (HDC)wp;
         RECT r;
         GetClientRect(h, &r);
         fill_solid(dc, r, C_FIELD);
         text_in(dc, g.f_label, C_TEXT3, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
                 g.cfg.history_enabled ? "No input yet — arm to start relaying" : "Key history is turned off");
-        EndPaint(h, &ps);
+        if (msg == WM_PAINT)
+            EndPaint(h, &ps);
         return 0;
     }
     if (msg == WM_NCDESTROY)
@@ -2685,32 +2976,39 @@ static void subclass(HWND h, WNDPROC proc)
 /*  Settings                                                                */
 /* ======================================================================== */
 
-static int get_int(HWND edit, int fallback)
+/* A whole number lo..hi in `edit` (spaces around it allowed). Returns 1 and
+ * sets *out; 0 for an empty field, other text or a value out of range (an
+ * overflow gives LONG_MIN / LONG_MAX, which no range here includes). */
+static int field_int(HWND edit, int lo, int hi, int *out)
 {
-    char b[32];
+    char b[32], *end;
     GetWindowTextA(edit, b, sizeof b);
-    int v = atoi(b);
-    return v ? v : fallback;
+    const char *s = b;
+    while (isspace((unsigned char)*s))
+        s++;
+    long n = strtol(s, &end, 10);
+    if (end == s)
+        return 0;
+    while (isspace((unsigned char)*end))
+        end++;
+    if (*end || n < lo || n > hi)
+        return 0;
+    *out = (int)n;
+    return 1;
 }
 
-static void apply_settings(void)
+/* The Connection tab's status line (shown in place of its hint). */
+static void connection_status(const char *text, int error)
 {
-    if(g.armed)set_armed(0); /* release old peer before editing/opening a new peer */
-    char old_target[128];
-    int old_port = g.cfg.port;
-    strcpy(old_target, g.cfg.target);
+    snprintf(g.conn_status, sizeof g.conn_status, "%s", text ? text : "");
+    g.conn_error = error;
+    invalidate_fields();
+}
 
-    GetWindowTextA(g.edit[0], g.cfg.target, sizeof g.cfg.target);
-    g.cfg.port = get_int(g.edit[1], g.cfg.port);
-    g.cfg.send_rate_hz = get_int(g.edit[2], g.cfg.send_rate_hz);
-    g.cfg.auto_disarm_ms = get_int(g.edit[3], 0);
-    if(g.cfg.port<1)g.cfg.port=1;else if(g.cfg.port>65535)g.cfg.port=65535;
-    if(g.cfg.send_rate_hz<10)g.cfg.send_rate_hz=10;else if(g.cfg.send_rate_hz>1000)g.cfg.send_rate_hz=1000;
-    if (g.cfg.auto_disarm_ms < 0)
-        g.cfg.auto_disarm_ms = 0;
-
-    if (!g.preview)
-        hidway_config_save("hidway.ini", &g.cfg);
+/* Reopen the relay socket when the address in use changed (Save on the
+ * Connection tab, or a route switch to a route with another address). */
+static void relay_reopen(const char *old_target, int old_port)
+{
     if (!g.preview && (strcmp(old_target, g.cfg.target) != 0 || old_port != g.cfg.port)) {
         g.net_ok = (hidway_net_open(g.cfg.target, g.cfg.port) == 0);
         hidway_net_notify(g.hwnd, WM_NET_READ);
@@ -2718,8 +3016,75 @@ static void apply_settings(void)
         memset(&g.status_order, 0, sizeof g.status_order);
         g.probes_unanswered = 0;
     }
+}
+
+/* Connection tab Save. An invalid field is refused with a message on the
+ * tab: nothing changes and nothing is disarmed. Otherwise this disarms
+ * first, then saves; a failed save also changes nothing and says so.
+ * Ranges are those hidway.ini is read with. Returns 1 when saved. */
+static int apply_settings(void)
+{
+    char target[sizeof g.cfg.target] = {0};
+    int port, rate, disarm;
+    GetWindowTextA(g.edit[0], target, sizeof target);
+    const char *t = target;
+    while (isspace((unsigned char)*t))
+        t++;
+    if (!*t) {
+        connection_status("Settings not saved: enter the relay address.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[1], 1, 65535, &port)) {
+        connection_status("Settings not saved: port must be 1 to 65535.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[2], 10, 1000, &rate)) {
+        connection_status("Settings not saved: rate must be 10 to 1000 Hz.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[3], 0, 60000, &disarm)) {
+        connection_status("Settings not saved: disarm must be 0 (off) to 60000 ms.", 1);
+        return 0;
+    }
+
+    if(g.armed)set_armed(0); /* release old peer before editing/opening a new peer */
+    char old_target[sizeof g.cfg.target];
+    int old_port = g.cfg.port;
+    strcpy(old_target, g.cfg.target);
+
+    hidway_config_t next = g.cfg;
+    memcpy(next.target, target, sizeof next.target);
+    next.port = port;
+    next.send_rate_hz = rate;
+    next.auto_disarm_ms = disarm;
+    hidway_profile_store(&next); /* address and port belong to the route in use */
+    int saved = g.preview || hidway_config_save("hidway.ini", &next);
+    if (saved)
+        g.cfg = next;
+    SecureZeroMemory(next.key_hex, sizeof next.key_hex);
+    if (!saved) {
+        connection_status("Could not save hidway.ini. Settings have not changed.", 1);
+        return 0;
+    }
+    connection_status(NULL, 0);
+    relay_reopen(old_target, old_port);
     history_add('i', "Settings saved");
     invalidate_readouts();
+    return 1;
+}
+
+/* The Connection fields show the saved values (after a route switch). */
+static void connection_fields_load(void)
+{
+    char tmp[32];
+    if (g.edit[0]) SetWindowTextA(g.edit[0], g.cfg.target);
+    snprintf(tmp, sizeof tmp, "%d", g.cfg.port);
+    if (g.edit[1]) SetWindowTextA(g.edit[1], tmp);
+    snprintf(tmp, sizeof tmp, "%d", g.cfg.send_rate_hz);
+    if (g.edit[2]) SetWindowTextA(g.edit[2], tmp);
+    snprintf(tmp, sizeof tmp, "%d", g.cfg.auto_disarm_ms);
+    if (g.edit[3]) SetWindowTextA(g.edit[3], tmp);
+    connection_status(NULL, 0);
 }
 
 /* ======================================================================== */
@@ -2733,15 +3098,6 @@ static HWND mk(HWND p, const char *cls, const char *txt, DWORD style, int id)
 }
 
 static void apply_window_chrome(HWND hwnd);
-static void refresh_source_controls(void)
-{
-    if(g.src[0])EnableWindow(g.src[0],!g.cfg.loopback_mode);
-    if(g.src[1])EnableWindow(g.src[1],!g.cfg.loopback_mode);
-    /* the route in use; the ellipsis says the button opens Input options */
-    if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Gaming PC...":"Remote PC...");
-    if(g.local_pico_button)InvalidateRect(g.local_pico_button,NULL,FALSE);
-    for(int i=0;i<3;i++)if(g.src[i])InvalidateRect(g.src[i],NULL,FALSE);
-}
 static const int repeat_source_masks[7]={1,2,4,3,5,6,7};
 static int option_speed(HWND edit)
 {
@@ -2752,21 +3108,13 @@ static int option_speed(HWND edit)
     while(isspace((unsigned char)*end))end++;
     return *end||n<1||n>25?0:(int)n;
 }
-static HWND option_control(HWND parent,const char *cls,const char *text,DWORD style,int id,
-                           int x,int y,int w,int h)
-{
-    HWND c=mk(parent,cls,text,style,id);
-    SetWindowPos(c,NULL,S(x),S(y),S(w),S(h),SWP_NOZORDER|SWP_NOACTIVATE);
-    SendMessageA(c,WM_SETFONT,(WPARAM)g.f_body,TRUE);
-    return c;
-}
 static void option_items(HWND combo,const char *const *items,unsigned n,int selected)
 {
     for(unsigned i=0;i<n;i++)SendMessageA(combo,CB_ADDSTRING,0,(LPARAM)items[i]);
     SendMessageA(combo,CB_SETCURSEL,(WPARAM)selected,0);
     SetWindowTheme(combo,L"DarkMode_Explorer",NULL);
 }
-/* Input options combo boxes. The client has no common-controls v6 manifest,
+/* Input tab combo boxes. The client has no common-controls v6 manifest,
  * so visual styles (and DarkMode themes) never apply to them: like the Input
  * Monitor's dropdowns the items are owner-drawn, and the closed box with its
  * drop arrow is painted here in the field colours. */
@@ -2810,7 +3158,7 @@ static void paint_combo(HWND h, HDC wdc)
     HBITMAP bm = CreateCompatibleBitmap(wdc, r.right, r.bottom);
     HGDIOBJ ob = SelectObject(dc, bm);
     int on = IsWindowEnabled(h) != 0;
-    fill_solid(dc, r, C_BG);
+    fill_solid(dc, r, C_CARD); /* the Input tab card behind the rounded corners */
     round_rect(dc, r, S(6), C_FIELD, on && GetFocus() == h ? C_FOCUS_BD : C_FIELD_BD);
     char text[128];
     combo_text(h, SendMessageA(h, CB_GETCURSEL, 0, 0), text, sizeof text);
@@ -2837,6 +3185,9 @@ static LRESULT CALLBACK combo_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         EndPaint(h, &ps);
         return 0;
     }
+    case WM_PRINTCLIENT:
+        paint_combo(h, (HDC)wp);
+        return 0;
     /* The classic combo draws its button/selection straight to the screen
      * on these; paint the dark box again right after. */
     case WM_ENABLE: case WM_SETFOCUS: case WM_KILLFOCUS: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
@@ -2851,45 +3202,176 @@ static LRESULT CALLBACK combo_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     return CallWindowProcA(orig, h, msg, wp, lp);
 }
-static void option_route_refresh(void)
+
+/* ---- routes, Input tab --------------------------------------------------- */
+
+/* What the Gaming PC route always means: virtual input only, so virtual on
+ * and repeat on virtual input. Physical / Touchpad keep their values and are
+ * ignored by input_source_mask() there. */
+static void route_constraints(hidway_config_t *c)
 {
-    int loopback=SendMessageA(g.route,CB_GETCURSEL,0,0)==1;
-    if(loopback)SendMessageA(g.repeat_source,CB_SETCURSEL,2,0);
-    EnableWindow(g.repeat_source,!loopback&&g.options_repeat);
-    EnableWindow(g.pointer_route,loopback);
+    if (c->loopback_mode) {
+        c->source_virtual = 1;
+        c->repeat_sources = HIDWAY_SOURCE_VIRTUAL;
+    }
 }
-/* Button / source / speed only matter while Hold to repeat is ticked; they
- * keep their values while greyed out. Call after every control exists. */
-static void option_repeat_refresh(void)
+
+static void input_status(const char *text, int error)
 {
-    EnableWindow(g.repeat_button,g.options_repeat);
-    EnableWindow(g.repeat_cps,g.options_repeat);
-    option_route_refresh();
+    snprintf(g.input_status, sizeof g.input_status, "%s", text ? text : "");
+    g.input_error = error;
+    invalidate_fields();
 }
-static void options_error(HWND h,const char *message)
+
+/* Enable rules of the Input tab, from the route in use and the pending
+ * Hold to repeat choice. Disabled controls keep their values. */
+static void input_tab_refresh(void)
 {
-    if(h){SetWindowTextA(h,"Input options - settings not saved");SetWindowTextA(g.options_hint,message);}
-    else{snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",message);invalidate_readouts();}
+    int loop = g.cfg.loopback_mode != 0, rep = g.pending.repeat_enabled != 0;
+    for (int i = 0; i < 3; i++)
+        if (g.src[i]) {
+            EnableWindow(g.src[i], !loop);
+            InvalidateRect(g.src[i], NULL, FALSE);
+        }
+    if (g.pointer_route) EnableWindow(g.pointer_route, loop);
+    if (loop && g.repeat_source) SendMessageA(g.repeat_source, CB_SETCURSEL, 2, 0);
+    if (g.repeat_source) EnableWindow(g.repeat_source, !loop && rep);
+    if (g.repeat_button) EnableWindow(g.repeat_button, rep);
+    if (g.repeat_cps) EnableWindow(g.repeat_cps, rep);
+    HWND redraw[] = {g.cb[0], g.cb[1], g.repeat, g.profile_button[0], g.profile_button[1], g.local_pico_button};
+    for (size_t i = 0; i < sizeof redraw / sizeof redraw[0]; i++)
+        if (redraw[i])
+            InvalidateRect(redraw[i], NULL, FALSE);
+    invalidate_fields();
 }
-static int options_commit(HWND h,const hidway_config_t *next)
+
+/* Unapplied edits are dropped: the controls show the saved values again.
+ * Called when the Input tab is entered and after every save. */
+static void input_tab_load(void)
+{
+    g.pending = g.cfg;
+    char text[24];
+    if (g.pointer_route) SendMessageA(g.pointer_route, CB_SETCURSEL, (WPARAM)(g.cfg.loopback_pointer_pico ? 1 : 0), 0);
+    if (g.repeat_button) SendMessageA(g.repeat_button, CB_SETCURSEL, (WPARAM)g.cfg.repeat_button, 0);
+    int selected = 0;
+    for (int i = 0; i < 7; i++)
+        if (repeat_source_masks[i] == g.cfg.repeat_sources)
+            selected = i;
+    if (g.repeat_source) SendMessageA(g.repeat_source, CB_SETCURSEL, (WPARAM)selected, 0);
+    snprintf(text, sizeof text, "%d", g.cfg.repeat_cps);
+    if (g.repeat_cps) SetWindowTextA(g.repeat_cps, text);
+    snprintf(text, sizeof text, "%d", g.cfg.virtual_click_cps);
+    if (g.click_cps) SetWindowTextA(g.click_cps, text);
+    g.input_dirty = 0; /* after the texts: EN_CHANGE marks edits */
+    g.input_error = 0;
+    g.input_status[0] = 0;
+    input_tab_refresh();
+}
+
+/* Save `next` as the configuration in use. A capture-policy change always
+ * starts from a released state, so this disarms first. On a save failure
+ * nothing changes and the reason is shown on the Input tab or in LIVE INPUT. */
+static int config_commit(const hidway_config_t *next, const char *saved, int on_input_tab)
 {
     if(g.armed)set_armed(0);
-    if(!g.preview&&!hidway_config_save("hidway.ini",next)) {
-        options_error(h,"Could not save hidway.ini. Settings have not changed.");return 0;
+    hidway_config_t copy = *next;
+    hidway_profile_store(&copy);
+    if(!g.preview&&!hidway_config_save("hidway.ini",&copy)) {
+        const char *message="Could not save hidway.ini. Settings have not changed.";
+        if(on_input_tab)input_status(message,1);
+        else{snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",message);invalidate_readouts();}
+        return 0;
     }
-    g.cfg=*next;
+    g.cfg=copy;
     g.local_pico_notice[0]=0;
-    refresh_source_controls();
-    history_add('i',"Input options saved - arm when ready");
+    input_tab_load();
+    history_add('i',saved);
     invalidate_readouts();
-    if(h)DestroyWindow(h);
     return 1;
 }
-static void use_local_pico(HWND options)
+
+/* Input tab: Apply and save. Same validation and error texts as the former
+ * Input options window, plus Keyboard / Mouse / Sources. */
+static int input_apply(void)
 {
+    int cps=option_speed(g.repeat_cps),limit=option_speed(g.click_cps);
+    if(cps<1||cps>25||limit<1||limit>25) {
+        input_status("Settings not saved: clicks/sec must be 1 to 25.",1);return 0;
+    }
+    hidway_config_t next=g.cfg;
+    next.relay_keyboard=g.pending.relay_keyboard;
+    next.relay_mouse=g.pending.relay_mouse;
+    next.source_physical=g.pending.source_physical;
+    next.source_touchpad=g.pending.source_touchpad;
+    next.source_virtual=g.pending.source_virtual;
+    next.loopback_pointer_pico=SendMessageA(g.pointer_route,CB_GETCURSEL,0,0)==1;
+    next.repeat_enabled=g.pending.repeat_enabled;
+    int button=(int)SendMessageA(g.repeat_button,CB_GETCURSEL,0,0);
+    next.repeat_button=button<0||button>4?0:button;
+    int selection=(int)SendMessageA(g.repeat_source,CB_GETCURSEL,0,0);
+    next.repeat_sources=repeat_source_masks[selection<0||selection>6?0:selection];
+    next.repeat_cps=cps;next.virtual_click_cps=limit;
+    /* Remote PC: Hold to repeat may only name ticked sources ("All selected
+     * sources" always fits). Gaming PC always repeats virtual input. */
+    int ticked=(next.source_physical?HIDWAY_SOURCE_PHYSICAL:0)|(next.source_touchpad?HIDWAY_SOURCE_TOUCHPAD:0)|
+               (next.source_virtual?HIDWAY_SOURCE_VIRTUAL:0);
+    if(!next.loopback_mode&&next.repeat_enabled&&next.repeat_sources!=7&&(next.repeat_sources&~ticked)) {
+        input_status("Settings not saved: the repeat source includes a source that is not ticked under Sources.",1);
+        return 0;
+    }
+    route_constraints(&next);
+    if(!config_commit(&next,"Input settings saved - arm when ready",1))return 0;
+    input_status("Saved. Press ARM when ready.",0);
+    return 1;
+}
+
+/* Switch route: disarm, keep the values of the route being left, load the
+ * other route's own values, apply and save. Unapplied Input tab edits are
+ * dropped. */
+static int route_select(int mode, const char *saved, int on_input_tab)
+{
+    char old_target[128];
+    int old_port = g.cfg.port;
+    strcpy(old_target, g.cfg.target);
+    hidway_config_t next = g.cfg;
+    hidway_profile_select(&next, mode);
+    route_constraints(&next);
+    if (!config_commit(&next, saved, on_input_tab))
+        return 0;
+    relay_reopen(old_target, old_port);
+    connection_fields_load();
+    return 1;
+}
+
+static void select_tab(int t)
+{
+    if (t < 0 || t >= TAB_COUNT)
+        return;
+    if (t == TAB_INPUT && g.tab != TAB_INPUT)
+        input_tab_load(); /* unapplied edits from an earlier visit are gone */
+    g.tab = t;
+    show_tab_controls();
+    if (g.tabs)
+        InvalidateRect(g.tabs, NULL, FALSE);
+    if (g.hwnd)
+        InvalidateRect(g.hwnd, NULL, FALSE);
+}
+
+static void local_pico_notice(const char *message)
+{
+    snprintf(g.local_pico_notice, sizeof g.local_pico_notice, "%s", message);
+    invalidate_readouts();
+}
+
+/* Pico on this PC: the existing checks, then the Gaming PC route with its
+ * own saved values. Never ARMs. The result is shown in LIVE INPUT on the
+ * Control tab, which it selects. */
+static void use_local_pico(void)
+{
+    select_tab(TAB_CONTROL);
     /* A main-window click must not end or reconfigure an active capture/replay. */
-    if(g.armed||replay.active||(!options&&g.options)) {
-        options_error(options,"DISARM and close Input options before selecting Pico on this PC.");return;
+    if(g.armed||replay.active) {
+        local_pico_notice("DISARM before selecting Pico on this PC.");return;
     }
     char target[128],port[24],expected_port[24];
     if(g.edit[0]) {
@@ -2897,170 +3379,57 @@ static void use_local_pico(HWND options)
         GetWindowTextA(g.edit[1],port,sizeof port);
         snprintf(expected_port,sizeof expected_port,"%d",g.cfg.port);
         if(strcmp(target,g.cfg.target)||strcmp(port,expected_port)) {
-            options_error(options,"Save the Pi relay address and port in Settings first.");return;
+            local_pico_notice("Save the Pi relay address and port on the Connection tab first.");return;
         }
     }
     if(!g.net_ok||hidway_net_peer_is_loopback()!=0) {
-        options_error(options,"Save the Pi relay address in Settings first.\r\n"
+        local_pico_notice("Save the Pi relay address on the Connection tab first.\r\n"
             "127.0.0.1 / localhost cannot forward USB HID through the Pi.");return;
     }
     if(hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
-        options_error(options,"Pico keyboard and mouse USB devices were not both found here.\r\n"
+        local_pico_notice("Pico keyboard and mouse USB devices were not both found here.\r\n"
             "Use this button on the Gaming PC with Pico USB connected.");return;
     }
+    /* The checked address must be the one the Gaming PC route will use. */
     hidway_config_t next=g.cfg;
-    next.loopback_mode=1;next.loopback_pointer_pico=0;
-    next.source_virtual=1;next.relay_keyboard=next.relay_mouse=1;
-    next.repeat_enabled=0;next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
-    if(options_commit(options,&next)) {
+    hidway_profile_select(&next,HIDWAY_PROFILE_GAMING);
+    if(strcmp(next.target,g.cfg.target)||next.port!=g.cfg.port) {
+        char message[192];
+        snprintf(message,sizeof message,"The Gaming PC route uses relay %s:%d. Select Gaming PC on the "
+                 "Input tab and check its address on the Connection tab.",next.target,next.port);
+        local_pico_notice(message);return;
+    }
+    if(route_select(HIDWAY_PROFILE_GAMING,"Pico on this PC: Gaming PC route saved - arm when ready",0)) {
         snprintf(g.local_pico_notice,sizeof g.local_pico_notice,
             "Pico on this PC: virtual keys, clicks and wheels -> USB HID.\r\n"
-            "Pointer stays native. Press ARM when ready.");
+            "Pointer %s. Press ARM when ready.",
+            g.cfg.loopback_pointer_pico?"moves through Pico (experimental)":"stays native");
         invalidate_readouts();
     }
 }
-static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
+
+static void register_tabs_class(void)
 {
-    switch(msg) {
-    case WM_CREATE: {
-        const DWORD combo=CBS_DROPDOWNLIST|CBS_OWNERDRAWFIXED|CBS_HASSTRINGS|WS_TABSTOP|WS_VSCROLL;
-        option_control(h,"STATIC","Send input to",0,0,20,20,130,20);
-        g.route=option_control(h,"COMBOBOX","",combo,ID_ROUTE,160,16,280,140);
-        const char *routes[]={"Remote PC -> Gaming PC","Gaming PC (Pico connected here)"};
-        option_items(g.route,routes,2,g.cfg.loopback_mode);
-        option_control(h,"STATIC","Gaming PC pointer",0,0,20,64,136,20);
-        g.pointer_route=option_control(h,"COMBOBOX","",combo,ID_POINTER,160,60,280,140);
-        const char *pointers[]={"Native position (recommended)","Through Pico: relative (experimental)"};
-        option_items(g.pointer_route,pointers,2,g.cfg.loopback_pointer_pico);
-        g.options_repeat=g.cfg.repeat_enabled;
-        g.repeat=option_control(h,"BUTTON","Hold to repeat",BS_OWNERDRAW|WS_TABSTOP,ID_REPEAT,20,110,190,26);
-        subclass(g.repeat,btn_proc);
-        option_control(h,"STATIC","Button",0,0,20,154,130,20);
-        g.repeat_button=option_control(h,"COMBOBOX","",combo,ID_REPEAT_BUTTON,160,150,280,180);
-        const char *buttons[]={"Left","Right","Middle","Back","Forward"};
-        option_items(g.repeat_button,buttons,5,g.cfg.repeat_button);
-        option_control(h,"STATIC","Repeat source",0,0,20,198,130,20);
-        g.repeat_source=option_control(h,"COMBOBOX","",combo,ID_REPEAT_SOURCE,160,194,280,200);
-        const char *sources[]={"Physical","Touchpad","Virtual / remote","Physical + touchpad",
-                               "Physical + virtual","Touchpad + virtual","All selected sources"};
-        int selected=0;for(int i=0;i<7;i++)if(repeat_source_masks[i]==g.cfg.repeat_sources)selected=i;
-        option_items(g.repeat_source,sources,7,selected);
-        HWND combos[]={g.route,g.pointer_route,g.repeat_button,g.repeat_source};
-        for(size_t i=0;i<sizeof combos/sizeof combos[0];i++)subclass(combos[i],combo_proc);
-        char text[24];snprintf(text,sizeof text,"%d",g.cfg.repeat_cps);
-        option_control(h,"STATIC","Repeat clicks/sec",0,0,20,242,136,20);
-        g.repeat_cps=option_control(h,"EDIT",text,ES_NUMBER|WS_BORDER|WS_TABSTOP,ID_REPEAT_CPS,160,238,78,28);
-        snprintf(text,sizeof text,"%d",g.cfg.virtual_click_cps);
-        option_control(h,"STATIC","Virtual clicks/sec",0,0,20,286,136,20);
-        g.click_cps=option_control(h,"EDIT",text,ES_NUMBER|WS_BORDER|WS_TABSTOP,ID_CLICK_CPS,160,282,78,28);
-        option_control(h,"STATIC","1-25 per button",0,0,254,286,180,20);
-        HWND local=option_control(h,"BUTTON","Use Pico on this PC",BS_OWNERDRAW|WS_TABSTOP,ID_LOCAL_PICO,20,330,420,34);
-        subclass(local,btn_proc);
-        g.options_hint=option_control(h,"STATIC","Preset: Pico USB connected here; relay stays on the Pi.\r\n"
-            "Virtual input; native pointer; repeat off. Saves without ARM.\r\n"
-            "Hold to repeat replaces dragging for its button/source.",0,0,20,370,420,60);
-        uint32_t limited=g.last_limited;
-        char info[96];snprintf(info,sizeof info,"Last ARM: %lu extra click attempts limited",(unsigned long)limited);
-        option_control(h,"STATIC",info,0,0,20,438,420,24);
-        /* Cancel closes without saving, exactly like the title-bar close. */
-        HWND cancel=option_control(h,"BUTTON","Cancel",BS_OWNERDRAW|WS_TABSTOP,IDCANCEL,160,474,110,34);
-        subclass(cancel,btn_proc);
-        HWND apply=option_control(h,"BUTTON","Apply and save",BS_OWNERDRAW|WS_TABSTOP,ID_SAVE,278,474,162,34);
-        subclass(apply,btn_proc);
-        option_repeat_refresh();return 0;
-    }
-    case WM_MEASUREITEM:((MEASUREITEMSTRUCT*)l)->itemHeight=(UINT)S(24);return TRUE;
-    case WM_DRAWITEM:
-        if(((const DRAWITEMSTRUCT*)l)->CtlType==ODT_COMBOBOX)draw_combo_item((const DRAWITEMSTRUCT*)l);
-        else draw_button((const DRAWITEMSTRUCT*)l);
-        return TRUE;
-    case WM_CTLCOLORSTATIC:
-        if((HWND)l==g.repeat_cps||(HWND)l==g.click_cps) { /* a greyed-out field stays a field */
-            SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT3);return (LRESULT)g.b_field;
-        }
-        SetBkColor((HDC)w,C_BG);SetTextColor((HDC)w,C_TEXT2);return (LRESULT)g.b_bg;
-    case WM_CTLCOLOREDIT:case WM_CTLCOLORLISTBOX:
-        SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT);return (LRESULT)g.b_field;
-    case WM_COMMAND:
-        if(LOWORD(w)==ID_LOCAL_PICO&&HIWORD(w)==BN_CLICKED) {
-            use_local_pico(h);return 0;
-        }
-        if(l&&(LOWORD(w)==ID_ROUTE||LOWORD(w)==ID_POINTER||LOWORD(w)==ID_REPEAT_BUTTON||LOWORD(w)==ID_REPEAT_SOURCE)&&
-           (HIWORD(w)==CBN_DROPDOWN||HIWORD(w)==CBN_CLOSEUP||HIWORD(w)==CBN_SELCHANGE))
-            InvalidateRect((HWND)l,NULL,FALSE); /* repaint the dark closed box */
-        if(LOWORD(w)==ID_ROUTE&&HIWORD(w)==CBN_SELCHANGE){option_route_refresh();return 0;}
-        if(LOWORD(w)==ID_REPEAT&&HIWORD(w)==BN_CLICKED) {
-            g.options_repeat=!g.options_repeat;InvalidateRect(g.repeat,NULL,FALSE);
-            option_repeat_refresh();return 0;
-        }
-        if(LOWORD(w)==IDCANCEL&&HIWORD(w)==BN_CLICKED){SendMessageA(h,WM_CLOSE,0,0);return 0;}
-        if(LOWORD(w)==ID_SAVE&&HIWORD(w)==BN_CLICKED) {
-            int cps=option_speed(g.repeat_cps),limit=option_speed(g.click_cps);
-            if(cps<1||cps>25||limit<1||limit>25) {
-                SetWindowTextA(h,"Input options - speed must be 1 to 25");return 0;
-            }
-            hidway_config_t next=g.cfg;
-            next.loopback_mode=(int)SendMessageA(g.route,CB_GETCURSEL,0,0)==1;
-            next.loopback_pointer_pico=SendMessageA(g.pointer_route,CB_GETCURSEL,0,0)==1;
-            next.repeat_enabled=g.options_repeat;
-            next.repeat_button=(int)SendMessageA(g.repeat_button,CB_GETCURSEL,0,0);
-            int selection=(int)SendMessageA(g.repeat_source,CB_GETCURSEL,0,0);
-            next.repeat_sources=repeat_source_masks[selection<0||selection>6?0:selection];
-            if(next.loopback_mode)next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
-            next.repeat_cps=cps;next.virtual_click_cps=limit;
-            if(next.loopback_mode)next.source_virtual=1;
-            options_commit(h,&next);return 0;
-        }
-        break;
-    case WM_CLOSE:DestroyWindow(h);return 0;
-    case WM_DESTROY:
-        g.options=NULL;
-        /* a screenshot run renders off-screen and must not take the foreground */
-        if(g.hwnd){EnableWindow(g.hwnd,TRUE);if(!g.shot_path[0])SetForegroundWindow(g.hwnd);}
-        return 0;
-    }
-    return DefWindowProcA(h,msg,w,l);
-}
-static void show_input_options(void)
-{
-    if(g.options){SetForegroundWindow(g.options);return;}
-    set_armed(0);
-    WNDCLASSA wc={0};wc.lpfnWndProc=options_proc;wc.hInstance=g.inst;wc.hCursor=LoadCursor(NULL,IDC_ARROW);
-    wc.hbrBackground=g.b_bg;wc.lpszClassName="HIDwayInputOptions";
+    WNDCLASSA wc;
+    if (GetClassInfoA(g.inst, "HIDwayTabs", &wc))
+        return;
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = tabs_proc;
+    wc.hInstance = g.inst;
+    wc.hCursor = LoadCursor(NULL, IDC_HAND);
+    wc.lpszClassName = "HIDwayTabs";
     RegisterClassA(&wc);
-    RECT parent;GetWindowRect(g.hwnd,&parent);
-    RECT size={0,0,S(462),S(528)};
-    AdjustWindowRectExForDpi(&size,WIN_STYLE,FALSE,0,g.dpi);
-    g.options=CreateWindowExA(0,wc.lpszClassName,"Input options",WIN_STYLE,parent.left+S(24),parent.top+S(32),
-        size.right-size.left,size.bottom-size.top,g.hwnd,NULL,g.inst,NULL);
-    if(g.options){EnableWindow(g.hwnd,FALSE);apply_window_chrome(g.options);ShowWindow(g.options,g.shot_path[0]?SW_SHOWNOACTIVATE:SW_SHOW);}
 }
 
+/* Creation order is the keyboard order: tab strip, page controls in reading
+ * order, then ARM / Pico on this PC / PANIC. */
 static void create_controls(HWND h)
 {
-    g.history = mk(h, "LISTBOX", "",
-                   LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | LBS_NOSEL | WS_VSCROLL,
-                   ID_HISTORY);
-    SetWindowTheme(g.history, L"DarkMode_Explorer", NULL); /* dark scrollbar */
-    subclass(g.history, list_proc);
+    register_tabs_class();
+    g.tabs = CreateWindowExA(0, "HIDwayTabs", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, h,
+                             (HMENU)(INT_PTR)ID_TABS, g.inst, NULL);
 
-    g.clear = mk(h, "BUTTON", "Clear", BS_OWNERDRAW | WS_TABSTOP, ID_CLEAR);
-    g.save = mk(h, "BUTTON", "Save", BS_OWNERDRAW | WS_TABSTOP, ID_SAVE);
-    g.options_button=mk(h,"BUTTON","Input options",BS_OWNERDRAW|WS_TABSTOP,ID_OPTIONS);
-    g.monitor_button=mk(h,"BUTTON","Monitor",BS_OWNERDRAW|WS_TABSTOP,ID_MONITOR);
-    g.updates_button=mk(h,"BUTTON","Updates",BS_OWNERDRAW|WS_TABSTOP,ID_UPDATES);
-    g.local_pico_button=mk(h,"BUTTON","Pico on this PC",BS_OWNERDRAW|WS_TABSTOP,ID_LOCAL_PICO);
-    g.replay_button=mk(h,"BUTTON","Replay...",BS_OWNERDRAW|WS_TABSTOP,ID_REPLAY);
-    g.compact_button=mk(h,"BUTTON",g.compact?"More":"Less",BS_OWNERDRAW|WS_TABSTOP,ID_COMPACT);
-    g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
-    g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
-    g.cb[0] = mk(h, "BUTTON", "Keyboard", BS_OWNERDRAW | WS_TABSTOP, ID_CB_KBD);
-    g.cb[1] = mk(h, "BUTTON", "Mouse", BS_OWNERDRAW | WS_TABSTOP, ID_CB_MOUSE);
-    g.cb[2] = mk(h, "BUTTON", "History", BS_OWNERDRAW | WS_TABSTOP, ID_CB_HIST);
-    g.src[0] = mk(h, "BUTTON", "Physical", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_PHYSICAL);
-    g.src[1] = mk(h, "BUTTON", "Touchpad", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_TOUCHPAD);
-    g.src[2] = mk(h, "BUTTON", "Virtual / remote", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_VIRTUAL);
-
+    /* Connection */
     char tmp[32];
     g.edit[0] = mk(h, "EDIT", g.cfg.target, ES_AUTOHSCROLL | WS_TABSTOP, ID_TARGET);
     snprintf(tmp, sizeof tmp, "%d", g.cfg.port);
@@ -3069,15 +3438,64 @@ static void create_controls(HWND h)
     g.edit[2] = mk(h, "EDIT", tmp, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_RATE);
     snprintf(tmp, sizeof tmp, "%d", g.cfg.auto_disarm_ms);
     g.edit[3] = mk(h, "EDIT", tmp, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_AUTO);
+    g.save = mk(h, "BUTTON", "Save", BS_OWNERDRAW | WS_TABSTOP, ID_SAVE);
 
-    HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2],
-                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button,g.updates_button,g.local_pico_button,
-                   g.compact_button};
+    /* Input */
+    const DWORD combo = CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_TABSTOP | WS_VSCROLL;
+    g.profile_button[0] = mk(h, "BUTTON", "Remote PC", BS_OWNERDRAW | WS_TABSTOP, ID_PROFILE_REMOTE);
+    g.profile_button[1] = mk(h, "BUTTON", "Gaming PC", BS_OWNERDRAW | WS_TABSTOP, ID_PROFILE_GAMING);
+    g.cb[0] = mk(h, "BUTTON", "Keyboard", BS_OWNERDRAW | WS_TABSTOP, ID_CB_KBD);
+    g.cb[1] = mk(h, "BUTTON", "Mouse", BS_OWNERDRAW | WS_TABSTOP, ID_CB_MOUSE);
+    g.src[0] = mk(h, "BUTTON", "Physical", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_PHYSICAL);
+    g.src[1] = mk(h, "BUTTON", "Touchpad", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_TOUCHPAD);
+    g.src[2] = mk(h, "BUTTON", "Virtual / remote", BS_OWNERDRAW | WS_TABSTOP, ID_SRC_VIRTUAL);
+    g.pointer_route = mk(h, "COMBOBOX", "", combo, ID_POINTER);
+    const char *pointers[] = {"Native position (recommended)", "Through Pico: relative (experimental)"};
+    option_items(g.pointer_route, pointers, 2, g.cfg.loopback_pointer_pico);
+    g.repeat = mk(h, "BUTTON", "Hold to repeat", BS_OWNERDRAW | WS_TABSTOP, ID_REPEAT);
+    g.repeat_button = mk(h, "COMBOBOX", "", combo, ID_REPEAT_BUTTON);
+    const char *buttons[] = {"Left", "Right", "Middle", "Back", "Forward"};
+    option_items(g.repeat_button, buttons, 5, g.cfg.repeat_button);
+    g.repeat_cps = mk(h, "EDIT", "", ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_REPEAT_CPS);
+    g.repeat_source = mk(h, "COMBOBOX", "", combo, ID_REPEAT_SOURCE);
+    const char *sources[] = {"Physical", "Touchpad", "Virtual / remote", "Physical + touchpad",
+                             "Physical + virtual", "Touchpad + virtual", "All selected sources"};
+    option_items(g.repeat_source, sources, 7, 0);
+    g.click_cps = mk(h, "EDIT", "", ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_CLICK_CPS);
+    g.input_apply = mk(h, "BUTTON", "Apply and save", BS_OWNERDRAW | WS_TABSTOP, ID_INPUT_APPLY);
+
+    /* Tools */
+    g.monitor_button = mk(h, "BUTTON", "Monitor", BS_OWNERDRAW | WS_TABSTOP, ID_MONITOR);
+    g.replay_button = mk(h, "BUTTON", replay.active ? "Stop" : "Replay...", BS_OWNERDRAW | WS_TABSTOP, ID_REPLAY);
+    g.updates_button = mk(h, "BUTTON", "Updates", BS_OWNERDRAW | WS_TABSTOP, ID_UPDATES);
+    g.cb[2] = mk(h, "BUTTON", "History", BS_OWNERDRAW | WS_TABSTOP, ID_CB_HIST);
+    g.clear = mk(h, "BUTTON", "Clear", BS_OWNERDRAW | WS_TABSTOP, ID_CLEAR);
+    g.history = mk(h, "LISTBOX", "",
+                   LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | LBS_NOSEL | WS_VSCROLL,
+                   ID_HISTORY);
+    SetWindowTheme(g.history, L"DarkMode_Explorer", NULL); /* dark scrollbar */
+    subclass(g.history, list_proc);
+
+    /* every tab */
+    g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
+    g.local_pico_button = mk(h, "BUTTON", "Pico on this PC", BS_OWNERDRAW | WS_TABSTOP, ID_LOCAL_PICO);
+    g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
+    if (g.armed && g.local_pico_button)
+        EnableWindow(g.local_pico_button, FALSE); /* same rule as set_armed() */
+
+    HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2], g.src[0], g.src[1], g.src[2],
+                   g.monitor_button, g.replay_button, g.updates_button, g.local_pico_button, g.repeat,
+                   g.profile_button[0], g.profile_button[1], g.input_apply};
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
-        subclass(btns[i], btn_proc);
+        if (btns[i])
+            subclass(btns[i], btn_proc);
+    HWND combos[] = {g.pointer_route, g.repeat_button, g.repeat_source};
+    for (size_t i = 0; i < sizeof combos / sizeof combos[0]; i++)
+        if (combos[i])
+            subclass(combos[i], combo_proc);
 
     apply_layout();
-    refresh_source_controls();
+    input_tab_load();
 }
 
 /* Short hover help for the main window's buttons. A tooltip never takes
@@ -3097,13 +3515,15 @@ static void add_tooltips(HWND hwnd)
     SendMessageA(g.tooltip, TTM_SETTIPTEXTCOLOR, C_TEXT, 0);
     struct { HWND h; const char *text; } tips[] = {
         {g.arm, "ARM: send this PC's keyboard and mouse to the Gaming PC. Press again (or the toggle hotkey) to DISARM."},
-        {g.local_pico_button, "Select and save the same-PC Pico preset (Gaming PC route). Does not ARM."},
+        {g.local_pico_button, "Check the local Pico USB devices and the relay address, then select and save the Gaming PC route. Does not ARM."},
         {g.panic, "PANIC: release every key and button immediately and disarm."},
-        {g.options_button, "Open Input options: route (Remote PC / Gaming PC), pointer and hold-to-repeat."},
+        {g.tabs, "Control, Connection, Input, Tools. Left / Right arrows switch tabs; switching never disarms."},
+        {g.profile_button[0], "Remote PC route: this PC controls the Gaming PC. Switching disarms, keeps each route's own settings and saves."},
+        {g.profile_button[1], "Gaming PC route: the Pico is connected to this PC; virtual input only. Switching disarms, keeps each route's own settings and saves."},
+        {g.input_apply, "Disarm, then apply and save the input settings of the route in use."},
         {g.monitor_button, "Open the Input Monitor: devices, live events and recordings."},
         {g.replay_button, "Load a recording and replay it through the Pi and Pico after confirmation."},
-        {g.compact_button, "Less: compact window without the recent list and settings fields. More: show them again."},
-        {g.save, "Save the relay address, port, rate and disarm settings."},
+        {g.save, "Save the relay address and port of the route in use, and the shared rate and disarm settings."},
         {g.clear, "Clear the recent input list (kept in memory only)."},
         {g.updates_button, "Check for HIDway updates."},
     };
@@ -3120,25 +3540,23 @@ static void add_tooltips(HWND hwnd)
     }
 }
 
-static void resize_to_layout(HWND hwnd, const RECT *pos);
-/* Switch between the full and the compact layout. `remember` stores the
- * choice in hidway.ini (the user's toggle); the start-up fallback does not. */
-static void set_compact(int on, int remember)
+/* Read-only Pico inventory from the GUI thread's own timer; a refresh never
+ * starts while one is running. Indication only: it gates nothing. */
+static void pico_refresh(void)
 {
-    g.compact = on ? 1 : 0;
-    if (remember && g.cfg.compact != g.compact) {
-        g.cfg.compact = g.compact;
-        if (!g.preview)
-            hidway_config_save("hidway.ini", &g.cfg);
-    }
-    if (!g.hwnd)
+    if (g.pico_pending)
         return;
-    compute_layout();
-    apply_layout();
-    resize_to_layout(g.hwnd, NULL);
-    keep_on_work_area(g.hwnd);
-    InvalidateRect(g.hwnd, NULL, FALSE);
+    g.pico_pending = 1;
+    unsigned state = hidway_local_pico_interfaces(g.cfg.loopback_device);
+    g.pico_pending = 0;
+    if (!g.pico_known || state != g.pico_state) {
+        g.pico_state = state;
+        g.pico_known = 1;
+        invalidate_readouts();
+    }
 }
+
+static void resize_to_layout(HWND hwnd, const RECT *pos);
 
 static void apply_window_chrome(HWND hwnd)
 {
@@ -3200,6 +3618,8 @@ static void preview_fill(void)
         g.pi_flags = HIDWAY_STATUS_SERIAL_OPEN | HIDWAY_STATUS_WAKE |
                      (HIDWAY_TARGET_ON << HIDWAY_STATUS_TARGET_SHIFT);
         g.armed_at_ms = timeGetTime() - 83000;
+        if (g.local_pico_button)
+            EnableWindow(g.local_pico_button, FALSE); /* as set_armed(1) would */
         g.modifiers = 0x02;
         hidway_bitmap_set(g.keys, 0x1A); /* W */
         hidway_bitmap_set(g.keys, 0x2C); /* Space */
@@ -3233,34 +3653,46 @@ static void preview_fill(void)
         g.focus_id = ID_TARGET;
 }
 
+/* --shot: render the client area straight into a bitmap (the painted page,
+ * then every visible child through WM_PRINT at its own position). Unlike a
+ * capture of the window, this does not depend on DWM having composed an
+ * off-screen, resized window or child controls shown after creation. */
 static void save_screenshot(HWND hwnd)
 {
-    RECT wr, fr;
-    GetWindowRect(hwnd, &wr);
-    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &fr, sizeof fr)))
-        fr = wr;
-    int w = wr.right - wr.left, h = wr.bottom - wr.top;
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    int w = cr.right, h = cr.bottom;
+    if (w <= 0 || h <= 0)
+        return;
     HDC sdc = GetDC(NULL);
     HDC mdc = CreateCompatibleDC(sdc);
     HBITMAP bm = CreateCompatibleBitmap(sdc, w, h);
     HGDIOBJ ob = SelectObject(mdc, bm);
-    PrintWindow(hwnd, mdc, 2 /* PW_RENDERFULLCONTENT */);
+    paint_content(mdc, cr);
+    for (HWND c = GetWindow(hwnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        if (!(GetWindowLongPtrA(c, GWL_STYLE) & WS_VISIBLE))
+            continue;
+        RECT r;
+        GetWindowRect(c, &r);
+        MapWindowPoints(NULL, hwnd, (POINT *)&r, 2);
+        int saved = SaveDC(mdc);
+        SetViewportOrgEx(mdc, r.left, r.top, NULL);
+        IntersectClipRect(mdc, 0, 0, r.right - r.left, r.bottom - r.top);
+        SendMessageA(c, WM_PRINT, (WPARAM)mdc, PRF_CLIENT | PRF_NONCLIENT | PRF_ERASEBKGND | PRF_CHILDREN);
+        RestoreDC(mdc, saved);
+    }
     SelectObject(mdc, ob);
 
-    int cx = fr.left - wr.left, cy = fr.top - wr.top;
-    int cw = fr.right - fr.left, chh = fr.bottom - fr.top;
     BITMAPINFOHEADER bi = {sizeof bi, w, -h, 1, 32, BI_RGB};
     uint8_t *px = (uint8_t *)malloc((size_t)w * h * 4);
     if (px && GetDIBits(sdc, bm, 0, (UINT)h, px, (BITMAPINFO *)&bi, DIB_RGB_COLORS)) {
         FILE *f = fopen(g.shot_path, "wb");
         if (f) {
-            BITMAPINFOHEADER oi = {sizeof oi, cw, -chh, 1, 32, BI_RGB};
-            BITMAPFILEHEADER fh = {0x4D42, (DWORD)(sizeof fh + sizeof oi + (size_t)cw * chh * 4), 0, 0,
-                                   (DWORD)(sizeof fh + sizeof oi)};
+            BITMAPFILEHEADER fh = {0x4D42, (DWORD)(sizeof fh + sizeof bi + (size_t)w * h * 4), 0, 0,
+                                   (DWORD)(sizeof fh + sizeof bi)};
             fwrite(&fh, sizeof fh, 1, f);
-            fwrite(&oi, sizeof oi, 1, f);
-            for (int y = 0; y < chh; y++)
-                fwrite(px + ((size_t)(y + cy) * w + cx) * 4, 4, (size_t)cw, f);
+            fwrite(&bi, sizeof bi, 1, f);
+            fwrite(px, 4, (size_t)w * h, f);
             fclose(f);
         }
     }
@@ -3284,7 +3716,7 @@ static void open_monitor(void)
 static void replay_choose(void)
 {
     if(replay.active){set_armed(0);history_add('i',"Replay stopped - all released");return;}
-    if(g.armed||g.preview||g.options){history_add('i',"DISARM and close input options before loading a replay");return;}
+    if(g.armed||g.preview||g.options){history_add('i',"DISARM before loading a replay");return;}
     wchar_t path[2048];wcscpy(path,replay.path);
     if(!path[0]) {
         OPENFILENAMEW dialog={0};dialog.lStructSize=sizeof dialog;dialog.hwndOwner=g.hwnd;dialog.lpstrFilter=L"HIDway recording (*.hidrec)\0*.hidrec\0\0";
@@ -3342,7 +3774,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g.hwnd = hwnd;
         g.dpi = g.preview_dpi ? g.preview_dpi : GetDpiForWindow(hwnd);
         create_fonts();
-        g.compact = want_compact(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST));
+        g.tab = TAB_CONTROL; /* every start opens on Control */
         compute_layout();
         load_mark_icon();
         create_controls(hwnd);
@@ -3363,20 +3795,19 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetTimer(hwnd, TIMER_PROBE, PROBE_MS, NULL);
         } else {
             preview_fill();
-            if (g.preview_options)
-                show_input_options();
+            select_tab(g.preview_tab); /* --tab=NAME */
             if (g.shot_path[0])
                 SetTimer(hwnd, TIMER_SHOT, 900, NULL);
         }
         badge_refresh(); /* preview: shown too, without taking anything over */
         SetTimer(hwnd, TIMER_UI, UI_REFRESH_MS, NULL);
+        pico_refresh();
+        SetTimer(hwnd, TIMER_PICO, PICO_REFRESH_MS, NULL);
         return 0;
 
     case WM_DPICHANGED: {
         g.dpi = HIWORD(wp);
         create_fonts();
-        /* the full window may stop (or start) fitting on the new monitor */
-        g.compact = want_compact(MonitorFromRect((const RECT *)lp, MONITOR_DEFAULTTONEAREST));
         compute_layout();
         load_mark_icon();
         resize_to_layout(hwnd, (const RECT *)lp);
@@ -3403,12 +3834,16 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         MEASUREITEMSTRUCT *mi = (MEASUREITEMSTRUCT *)lp;
         if (mi->CtlType == ODT_LISTBOX)
             mi->itemHeight = (UINT)S(21);
+        else if (mi->CtlType == ODT_COMBOBOX) /* closed box (itemID -1) and list items */
+            mi->itemHeight = (UINT)S(mi->itemID == (UINT)-1 ? 22 : 24);
         return TRUE;
     }
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *d = (DRAWITEMSTRUCT *)lp;
         if (d->CtlType == ODT_LISTBOX)
             draw_history_item(d);
+        else if (d->CtlType == ODT_COMBOBOX)
+            draw_combo_item(d);
         else
             draw_button(d);
         return TRUE;
@@ -3422,15 +3857,29 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetBkColor((HDC)wp, C_FIELD);
         SetTextColor((HDC)wp, C_TEXT);
         return (LRESULT)g.b_field;
+    case WM_CTLCOLORSTATIC: /* a greyed-out field stays a field */
+        if ((HWND)lp == g.repeat_cps || (HWND)lp == g.click_cps) {
+            SetBkColor((HDC)wp, C_FIELD);
+            SetTextColor((HDC)wp, C_TEXT3);
+            return (LRESULT)g.b_field;
+        }
+        break;
 
     case WM_LBUTTONDOWN: {
         POINT pt = {(short)LOWORD(lp), (short)HIWORD(lp)};
-        for (int i = 0; i < 4 && !g.compact; i++) /* compact: the fields are hidden */
-            if (PtInRect(&g.L.frame[i], pt)) {
-                SetFocus(g.edit[i]);
-                SendMessageA(g.edit[i], EM_SETSEL, 0, -1);
+        /* a click on a field frame focuses its edit; only on the visible tab */
+        struct { const RECT *frame; HWND edit; int tab; } fields[] = {
+            {&g.L.frame[0], g.edit[0], TAB_CONNECTION}, {&g.L.frame[1], g.edit[1], TAB_CONNECTION},
+            {&g.L.frame[2], g.edit[2], TAB_CONNECTION}, {&g.L.frame[3], g.edit[3], TAB_CONNECTION},
+            {&g.L.repeat_cps, g.repeat_cps, TAB_INPUT}, {&g.L.click_cps, g.click_cps, TAB_INPUT},
+        };
+        for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++)
+            if (fields[i].tab == g.tab && fields[i].edit && IsWindowEnabled(fields[i].edit) &&
+                PtInRect(fields[i].frame, pt)) {
+                SetFocus(fields[i].edit);
+                SendMessageA(fields[i].edit, EM_SETSEL, 0, -1);
             }
-        if (PtInRect(&g.L.tiles[3], pt))
+        if (g.tab == TAB_CONTROL && PtInRect(&g.L.tiles[3], pt))
             send_wake(); /* only when the tile offers it */
         return 0;
     }
@@ -3438,7 +3887,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     /* The PC tile is a button while it offers wake: hand cursor and hover. */
     case WM_MOUSEMOVE: {
         POINT pt = {(short)LOWORD(lp), (short)HIWORD(lp)};
-        int hot = PtInRect(&g.L.tiles[3], pt) && wake_offered();
+        int hot = g.tab == TAB_CONTROL && PtInRect(&g.L.tiles[3], pt) && wake_offered();
         if (hot != g.wake_hot) {
             g.wake_hot = hot;
             if (hot) {
@@ -3550,27 +3999,57 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         case IDM_QUIT: DestroyWindow(hwnd); return 0;
         }
-        if (LOWORD(wp) >= ID_TARGET && LOWORD(wp) <= ID_AUTO) {
+        if ((LOWORD(wp) >= ID_TARGET && LOWORD(wp) <= ID_AUTO) || LOWORD(wp) == ID_REPEAT_CPS ||
+            LOWORD(wp) == ID_CLICK_CPS) {
             if (HIWORD(wp) == EN_SETFOCUS) {
                 g.focus_id = LOWORD(wp);
                 invalidate_fields();
             } else if (HIWORD(wp) == EN_KILLFOCUS) {
                 g.focus_id = 0;
                 invalidate_fields();
+            } else if (HIWORD(wp) == EN_CHANGE && LOWORD(wp) > ID_AUTO && !g.input_dirty) {
+                g.input_dirty = 1; /* Input tab speed edited, not applied yet */
+                invalidate_fields();
+            }
+            return 0;
+        }
+        /* Input tab combo boxes: repaint the dark closed box; a new choice is
+         * an edit that waits for Apply and save. */
+        if (LOWORD(wp) == ID_POINTER || LOWORD(wp) == ID_REPEAT_BUTTON || LOWORD(wp) == ID_REPEAT_SOURCE) {
+            if (lp && (HIWORD(wp) == CBN_DROPDOWN || HIWORD(wp) == CBN_CLOSEUP || HIWORD(wp) == CBN_SELCHANGE))
+                InvalidateRect((HWND)lp, NULL, FALSE);
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                g.input_dirty = 1;
+                invalidate_fields();
             }
             return 0;
         }
         if (HIWORD(wp) == BN_CLICKED) {
-            if (g.armed && (LOWORD(wp) == ID_CB_KBD || LOWORD(wp) == ID_CB_MOUSE ||
-                            LOWORD(wp) == ID_SRC_PHYSICAL || LOWORD(wp) == ID_SRC_TOUCHPAD ||
-                            LOWORD(wp) == ID_SRC_VIRTUAL))
-                set_armed(0); /* a capture-policy change always starts from a released state */
+            /* Tabs, the route selector and the Input tab boxes never disarm by
+             * themselves: only applying a change (or switching route) does. */
             switch (LOWORD(wp)) {
-            case ID_COMPACT:set_compact(!g.compact,1);break; /* layout only: never disarms */
+            case ID_TAB_CONTROL: case ID_TAB_CONNECTION: case ID_TAB_INPUT: case ID_TAB_TOOLS:
+                select_tab(LOWORD(wp) - ID_TAB_CONTROL);
+                break;
+            case ID_OPTIONS: select_tab(TAB_INPUT); break; /* the former Input options window */
+            case ID_COMPACT: break;                        /* Less / More no longer exists */
+            case ID_PROFILE_REMOTE: case ID_PROFILE_GAMING: {
+                int mode = LOWORD(wp) == ID_PROFILE_GAMING;
+                if (mode != g.cfg.loopback_mode &&
+                    route_select(mode, mode ? "Route: Gaming PC - arm when ready" : "Route: Remote PC - arm when ready", 1))
+                    input_status(mode ? "Gaming PC route selected and saved. Press ARM when ready."
+                                      : "Remote PC route selected and saved. Press ARM when ready.", 0);
+                break;
+            }
+            case ID_INPUT_APPLY: input_apply(); break;
+            case ID_REPEAT:
+                g.pending.repeat_enabled = !g.pending.repeat_enabled;
+                g.input_dirty = 1;
+                input_tab_refresh();
+                break;
             case ID_MONITOR:open_monitor();break;
             case ID_REPLAY:replay_choose();break;
-            case ID_OPTIONS:show_input_options();break;
-            case ID_LOCAL_PICO:use_local_pico(NULL);break;
+            case ID_LOCAL_PICO:use_local_pico();break;
             case ID_UPDATES:
                 if(!g.preview){int result=hw_companion_open(hwnd,HW_COMPANION_UPDATES);
                     if(result!=HW_COMPANION_OK)MessageBoxW(hwnd,hw_companion_error(result),L"Updates unavailable",MB_OK|MB_ICONINFORMATION);}
@@ -3579,23 +4058,33 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             case ID_PANIC: set_armed(0); history_add('w', "PANIC - all released"); break;
             case ID_CLEAR: SendMessageA(g.history, LB_RESETCONTENT, 0, 0); break;
             case ID_SAVE:
-                apply_settings();
+                if (!apply_settings())
+                    break; /* the reason is on the Connection tab; no "Saved" flash */
                 g.saved_flash = 1;
                 InvalidateRect(g.save, NULL, FALSE);
                 SetTimer(hwnd, TIMER_SAVED, 1400, NULL);
                 break;
-            case ID_CB_KBD: g.cfg.relay_keyboard = !g.cfg.relay_keyboard; break;
-            case ID_CB_MOUSE: g.cfg.relay_mouse = !g.cfg.relay_mouse; break;
-            case ID_CB_HIST:
+            case ID_CB_HIST: /* display only: applies at once, as before */
                 g.cfg.history_enabled = !g.cfg.history_enabled;
                 InvalidateRect(g.history, NULL, FALSE);
                 break;
-            case ID_SRC_PHYSICAL: g.cfg.source_physical = !g.cfg.source_physical; break;
-            case ID_SRC_TOUCHPAD: g.cfg.source_touchpad = !g.cfg.source_touchpad; break;
-            case ID_SRC_VIRTUAL: g.cfg.source_virtual = !g.cfg.source_virtual; break;
+            case ID_CB_KBD: g.pending.relay_keyboard = !g.pending.relay_keyboard; g.input_dirty = 1; break;
+            case ID_CB_MOUSE: g.pending.relay_mouse = !g.pending.relay_mouse; g.input_dirty = 1; break;
+            /* Gaming PC: Physical / Touchpad are not selectable and Virtual is
+             * forced on (the boxes are disabled; a queued click changes nothing) */
+            case ID_SRC_PHYSICAL:
+                if (!g.cfg.loopback_mode) { g.pending.source_physical = !g.pending.source_physical; g.input_dirty = 1; }
+                break;
+            case ID_SRC_TOUCHPAD:
+                if (!g.cfg.loopback_mode) { g.pending.source_touchpad = !g.pending.source_touchpad; g.input_dirty = 1; }
+                break;
+            case ID_SRC_VIRTUAL:
+                if (!g.cfg.loopback_mode) { g.pending.source_virtual = !g.pending.source_virtual; g.input_dirty = 1; }
+                break;
             }
             if (is_checkbox(LOWORD(wp))) {
-                InvalidateRect((HWND)lp, NULL, FALSE);
+                if (lp)
+                    InvalidateRect((HWND)lp, NULL, FALSE);
                 invalidate_readouts();
             }
         }
@@ -3630,12 +4119,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_SAVED);
             g.saved_flash = 0;
             InvalidateRect(g.save, NULL, FALSE);
+        } else if (wp == TIMER_PICO) {
+            pico_refresh();
         } else if (wp == TIMER_SHOT) {
             KillTimer(hwnd, TIMER_SHOT);
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            if (g.options) /* --options: the Input options window instead */
-                RedrawWindow(g.options, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            save_screenshot(g.options ? g.options : hwnd);
+            save_screenshot(hwnd);
             DestroyWindow(hwnd);
         }
         return 0;
@@ -3663,6 +4151,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g.bf_hint) DeleteObject(g.bf_hint);
         KillTimer(hwnd, TIMER_UI);
         KillTimer(hwnd, TIMER_PROBE);
+        KillTimer(hwnd, TIMER_PICO);
         UnregisterHotKey(hwnd, HK_TOGGLE);
         UnregisterHotKey(hwnd, HK_PANIC);
         hidway_net_close();
@@ -3691,19 +4180,20 @@ static void parse_args(const char *cmd)
         memcpy(g.shot_path, s, n);
         g.shot_path[n] = 0;
     }
-    /* Preview-only layout aids (ignored without --preview / --preview-armed). */
+    /* Preview-only layout aids (ignored without --preview / --preview-armed):
+     * --tab=control|connection|input|tools opens that tab (--options: Input). */
     if (g.preview) {
-        g.preview_compact = strstr(cmd, "--compact") != NULL;
-        g.preview_options = strstr(cmd, "--options") != NULL;
+        const char *tab = strstr(cmd, "--tab=");
+        if (tab)
+            for (int i = 0; i < TAB_COUNT; i++)
+                if (!_strnicmp(tab + 6, TAB_NAMES[i], strlen(TAB_NAMES[i])))
+                    g.preview_tab = i;
+        if (strstr(cmd, "--options"))
+            g.preview_tab = TAB_INPUT;
         const char *dpi = strstr(cmd, "--dpi=");
         if (dpi) {
             int v = atoi(dpi + 6);
             g.preview_dpi = v >= 96 && v <= 384 ? (UINT)v : 0;
-        }
-        const char *work = strstr(cmd, "--work-height=");
-        if (work) {
-            int v = atoi(work + 14);
-            g.preview_work_h = v >= 200 && v <= 10000 ? v : 0;
         }
     }
     const char *hot = strstr(cmd, "--hot=");
