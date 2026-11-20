@@ -28,15 +28,31 @@ not identify applications or correlate every possible driver.
 
 ## The window: four tabs
 
-The main window has four tabs. **ARM**, **Pico on this PC** and **PANIC** stay
-at the bottom of every tab.
+The main window is 700 x 432 and has two parts. The **rail** on the left is
+the same on every tab: the HIDway name and version; the state (DISARMED with
+the route, or ARMED with a running timer, on a green block); four facts, each
+with a symbol and a word (Route, Relay, Pico, Target); **ARM** (it shows the
+toggle hotkey under its name, and reads **DISARM** while armed); **Pico on this
+PC**; and **PANIC** on its own at the bottom, behind a divider. The right side
+has four tabs, a body and one message strip. Colour never carries a state alone:
+a hollow circle means off or idle, a filled dot good, a ring armed, a triangle a
+problem, a half circle partly detected.
 
 | Tab | What is on it |
 |---|---|
-| **Control** | Connection status (reachability, round-trip time, loss, rate, whether the target is on), whether the Pico is connected to this PC, the route in use and the live input readout |
-| **Connection** | Relay address, port, send rate and auto-disarm time, with **Save** |
-| **Input** | The route (Remote PC or Gaming PC), keyboard and mouse output, the sources, the Gaming PC pointer, hold-to-repeat and the virtual click limit, with **Apply and save** |
-| **Tools** | Input Monitor, replay of a recording, updates and the recent-input list |
+| **Control** | Connection status (reachability, round-trip time, loss, rate, whether the target is on), the relay address, and the live input panel: what is held while ARMED, and what ARM will send (route, sources, click pacing, auto-disarm) from the saved settings |
+| **Connection** | Relay address, port, send rate and auto-disarm time, with **Save**, and the state of the link |
+| **Input** | In two columns: the route (Remote PC or Gaming PC), keyboard and mouse output, the sources and the Gaming PC pointer; and hold-to-repeat, the virtual click limit and **Apply and save**. An amber dot on the tab means edits that are not applied yet |
+| **Tools** | Input Monitor, replay of a recording, updates, the hotkeys and the recent-input list |
+
+The message strip at the foot of the window is the one place for messages: a
+refused or failed Save, the Input tab's status and hint, the result of **Pico on
+this PC**, and a hotkey that is already in use. Each has a symbol and a colour
+for how serious it is (grey information, green done, amber attention, red
+error). A message stays until the action that wrote it clears it, as before; a
+message longer than two lines ends in an ellipsis and shows in full as a tooltip.
+A newer release, found by the one check at start, appears as a blue bar under the
+tab strip while HIDway is disarmed.
 
 Remote PC and Gaming PC are two profiles. Each keeps its own relay address,
 outputs, sources, pointer and repeat settings, so switching the route brings
@@ -54,7 +70,7 @@ on. **Physical** there is a separate, experimental choice: this PC's own keys
 through the Pico (see *This PC's own keys through the Pico* below). It has its
 own setting and never takes the Remote PC route's Physical value.
 
-The Control tab's **Pico** line reads *On this PC*, *Partly detected* or *Not
+The rail's **Pico** line reads *On this PC*, *Partly detected* or *Not
 on this PC*. It is a display only and never changes the route or arms.
 
 **Pico on this PC**, beside ARM on the main window, is a one-click preset for
@@ -67,7 +83,7 @@ Selecting **Gaming PC** on the Input tab and applying does the same without
 the check that the Pico is connected.
 The main button is disabled while ARMED; a queued click cannot stop or change
 an active capture/replay. Unsaved relay address/port edits must be saved first.
-Success or a missing-device/address/save error appears in the Live Input card,
+Success or a missing-device/address/save error appears in the message strip,
 including when input history is disabled. After selecting the preset, press ARM
 when ready. The button does not enable physical/touchpad recapture on this PC.
 The configured Pi relay address, port and key stay unchanged: virtual keys,
@@ -190,7 +206,7 @@ Pointer movement and the horizontal wheel are never taken: they stay native.
 **What it needs and what it refuses:**
 
 - ARM is refused unless the Pico keyboard and mouse are found on this PC
-  (the message is in LIVE INPUT and in the recent input list).
+  (the message is in the message strip and in the recent input list).
 - If the Pico does not send back what was sent (five changes within three
   seconds with nothing coming back), HIDway disarms and says so.
 - If one key or button is taken from this PC more than 50 times a second,
