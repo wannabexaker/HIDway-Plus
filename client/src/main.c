@@ -92,6 +92,10 @@ int WINAPI GdipSetPenStartCap(void *pen, int cap);
 int WINAPI GdipSetPenEndCap(void *pen, int cap);
 int WINAPI GdipSetPenLineJoin(void *pen, int join);
 int WINAPI GdipDrawLines(void *graphics, void *pen, const HW_PointF *points, int count);
+int WINAPI GdipDrawEllipse(void *graphics, void *pen, float x, float y, float w, float h);
+int WINAPI GdipFillPolygon(void *graphics, void *brush, const HW_PointF *points, int count, int fill_mode);
+int WINAPI GdipFillPie(void *graphics, void *brush, float x, float y, float w, float h, float start, float sweep);
+int WINAPI GdipFillRectangle(void *graphics, void *brush, float x, float y, float w, float h);
 
 /* ---- constants ----------------------------------------------------------- */
 #define HK_TOGGLE 1
@@ -139,9 +143,11 @@ enum {
 enum { TAB_CONTROL, TAB_CONNECTION, TAB_INPUT, TAB_TOOLS, TAB_COUNT };
 static const char *const TAB_NAMES[TAB_COUNT] = {"Control", "Connection", "Input", "Tools"};
 
-/* Logical (96 DPI) window size; the same on every tab. */
-#define LAYOUT_W 520
-#define LAYOUT_H 520
+/* Logical (96 DPI) window size; the same on every tab: a 208 px rail on the
+ * left (state, facts, ARM, Pico on this PC, PANIC) and the tab pane on the
+ * right (tab strip, body, one message strip). */
+#define LAYOUT_W 700
+#define LAYOUT_H 432
 
 enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 
@@ -185,27 +191,87 @@ enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
 #define C_ARM_BD_H  RGB(68, 146, 87)
 #define C_ARM_TX    RGB(214, 246, 218)
 
+/* ---- window palette (the Rail design). The badge keeps the C_ colours above. */
+#define W_RAIL        RGB(17, 18, 20)
+#define W_BG          RGB(23, 24, 27)
+#define W_SURF        RGB(31, 33, 37)
+#define W_SURF2       RGB(39, 42, 47)
+#define W_FIELD       RGB(27, 29, 33)
+#define W_LINE        RGB(46, 49, 55)
+#define W_LINE2       RGB(59, 63, 70)
+#define W_FOCUS       RGB(146, 152, 162)
+#define W_TEXT        RGB(236, 237, 239)
+#define W_TEXT2       RGB(174, 177, 184)
+#define W_TEXT3       RGB(130, 134, 142)
+#define W_CHECK       RGB(217, 219, 223)
+#define W_GREEN       RGB(63, 185, 80)
+#define W_GREEN_F     RGB(24, 51, 31)
+#define W_GREEN_BD    RGB(62, 154, 85)
+#define W_GREEN_TX    RGB(142, 229, 156)
+#define W_ARM         RGB(44, 134, 68)
+#define W_ARM_H       RGB(52, 152, 78)
+#define W_ARM_P       RGB(36, 112, 57)
+#define W_ARM_BD      RGB(69, 167, 94)
+#define W_ARM_TX      RGB(244, 255, 246)
+#define W_ARM_SUB     RGB(205, 239, 212)
+#define W_ARMED_TX    RGB(216, 247, 221)
+#define W_ARMED_SUB   RGB(156, 203, 166)
+#define W_DIS         RGB(74, 78, 86)
+#define W_DIS_H       RGB(88, 93, 102)
+#define W_DIS_P       RGB(63, 67, 74)
+#define W_DIS_BD      RGB(104, 109, 118)
+#define W_DIS_SUB     RGB(201, 204, 210)
+#define W_RED         RGB(229, 83, 75)
+#define W_RED_F       RGB(59, 23, 25)
+#define W_RED_FH      RGB(80, 31, 34)
+#define W_RED_FP      RGB(48, 19, 21)
+#define W_RED_BD      RGB(180, 66, 61)
+#define W_RED_BDH     RGB(214, 84, 78)
+#define W_RED_TX      RGB(255, 158, 150)
+#define W_AMBER       RGB(217, 162, 58)
+#define W_SEG_ON      RGB(58, 62, 70)
+#define W_KEY         RGB(46, 49, 55)
+#define W_KEY_BD      RGB(69, 73, 81)
+#define W_BX_BD       RGB(90, 94, 102)
+#define W_BX_DIS_BD   RGB(63, 67, 74)
+#define W_BX_DIS_ON   RGB(94, 98, 106)
+#define W_MSG_ERR_BG  RGB(34, 24, 26)
+#define W_MSG_ERR_TX  RGB(243, 201, 197)
+#define W_MSG_WARN_BG RGB(34, 30, 21)
+#define W_MSG_WARN_TX RGB(234, 214, 168)
+#define W_MSG_OK_TX   RGB(191, 233, 198)
+#define W_WARN_LINE   RGB(227, 194, 122)
+#define W_UPD         RGB(22, 32, 46)
+#define W_UPD_BD      RGB(52, 80, 122)
+#define W_UPD_TX      RGB(200, 216, 240)
+#define W_UPD_ICO     RGB(127, 168, 230)
+#define W_UPD_BTN     RGB(34, 50, 74)
+#define W_UPD_BTN_BD  RGB(70, 103, 154)
+
 typedef struct {
     int W, H;
-    /* every tab: header, tab strip, action row */
-    RECT mark, pill, tabs, page;
-    int title_x, title_y, sub_y;
-    RECT arm, panic, local_pico;
-    /* update banner: its text area and its two buttons (all from `banner`) */
+    /* rail: brand, state block, four fact rows, ARM / Pico on this PC / PANIC */
+    RECT rail, mark, state, arm, local_pico, panic;
+    int title_x, title_cy, fact_x, fact_vx, fact_cy[4], div_y;
+    /* pane: tab strip (a child), page, body, the one message strip */
+    RECT tabs, page, body, msg;
+    /* update banner: the blue bar under the tab strip, and its two buttons */
     RECT banner, banner_now, banner_later;
     /* Control */
-    RECT stats, tiles[4], live;
-    int info_cy;
-    /* Connection */
-    RECT settings, save, frame[4], conn_hint;
-    int label_y;
-    /* Input */
-    RECT input, apply, profile[2], cb[2], src[3], pointer, repeat, repeat_button, repeat_source;
-    RECT repeat_cps, click_cps, status; /* field frames and the status text */
-    int row_route, row_relay, row_sources, row_pointer, row_button, row_source, row_click, row_limited;
+    RECT tiles[4], live;
+    int head_cy, live_head_cy;
+    /* Connection: field frames (address, port, rate, disarm), Save, row positions */
+    RECT frame[4], save;
+    int conn_head_cy[3], conn_lbl_cy[2], conn_hint_cy, link_cy;
+    /* Input: two columns. note is the Physical experimental note (Gaming PC route). */
+    RECT seg, profile[2], cb[2], src[3], note, pointer, vr, repeat, repeat_button, repeat_source;
+    RECT repeat_cps, click_cps, limited, apply; /* field frames, the last-ARM note, the button */
+    int in_route_cy, in_desc_cy, in_relay_cy, in_src_cy, in_ptr_cy;
+    int in_cap_cy, in_btn_cy, in_rsrc_cy, in_click_cy, in_cps_right;
+    int note_shown;
     /* Tools */
-    RECT tools, monitor_btn, replay_btn, updates, recent, history_cb, clear, list;
-    int hk_cy;
+    RECT monitor_btn, replay_btn, updates, history_cb, clear, list;
+    int hk_cy, rh_cy;
 } layout_t;
 
 static struct {
@@ -289,6 +355,11 @@ static struct {
     HWND tabs,profile_button[2],input_apply;
     HWND monitor_button,replay_button,updates_button,local_pico_button,tooltip;
     char local_pico_notice[192];
+    int pico_sev;                   /* SEV_* of local_pico_notice */
+    unsigned msg_stamp[3], msg_seq; /* which message site spoke last (MSRC_*) */
+    int msg_lines;                  /* lines the message strip needs now: 1 or 2 */
+    int layout_banner;              /* banner_visible() when the layout was computed */
+    int tab_dirty_drawn;            /* g.input_dirty as the tab strip last drew it */
     /* Input tab: edits not applied yet (reset from g.cfg when the tab is
      * entered), and its status / error line. */
     hidway_config_t pending;
@@ -296,6 +367,7 @@ static struct {
     char input_status[160];
     /* Connection tab: why the last Save was refused or failed (empty: the hint) */
     int conn_error;
+    int conn_bad; /* 1-4: the field the last refused Save named (drawn with a red frame), 0 none */
     char conn_status[160];
     /* Pico on this PC indication (read-only, GUI-thread timer) */
     unsigned pico_state;
@@ -307,7 +379,7 @@ static struct {
     char update_notice[64]; /* why Update now did not start, in place of the banner text */
     HWND update_now, update_later;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
-          f_btn, f_btn_big, f_chip;
+          f_btn, f_btn_big, f_chip, f_tab, f_timer, f_arm_sub, f_panic, f_fact, f_semi;
     HICON mark_icon;
     HBRUSH b_bg, b_field;
     ULONG_PTR gdip;
@@ -348,6 +420,12 @@ static int S(int v)
 {
     return MulDiv(v, (int)g.dpi, 96);
 }
+
+/* The one message strip: how serious a message is, and which of the three
+ * message buffers (Connection status, Input status, Pico notice) spoke. */
+enum { SEV_INFO, SEV_OK, SEV_WARN, SEV_ERR };
+enum { MSRC_CONN, MSRC_INPUT, MSRC_PICO, MSRC_COUNT };
+#define ID_MSG_TIP 0x7101 /* the strip's tooltip: the whole text of a long message */
 
 /* ======================================================================== */
 /*  Text and shape primitives                                               */
@@ -473,7 +551,7 @@ static void fill_path(void *gr, void *path, COLORREF c)
 
 /* Anti-aliased rounded rectangle; the 1px border (if different from the
  * fill) is drawn inside the rectangle so edges stay crisp. */
-static void round_rect(HDC dc, RECT r, int rad, COLORREF fill, COLORREF border)
+static void round_rect_w(HDC dc, RECT r, int rad, COLORREF fill, COLORREF border, int bw)
 {
     void *gr = gp_begin(dc);
     float x = (float)r.left, y = (float)r.top;
@@ -482,12 +560,17 @@ static void round_rect(HDC dc, RECT r, int rad, COLORREF fill, COLORREF border)
     fill_path(gr, outer, border);
     GdipDeletePath(outer);
     if (border != fill) {
-        float t = (float)(S(1) > 0 ? S(1) : 1);
+        float t = (float)(bw > 0 ? bw : 1);
         void *inner = path_round(x + t, y + t, w - 2 * t, h - 2 * t, (float)rad - t);
         fill_path(gr, inner, fill);
         GdipDeletePath(inner);
     }
     GdipDeleteGraphics(gr);
+}
+
+static void round_rect(HDC dc, RECT r, int rad, COLORREF fill, COLORREF border)
+{
+    round_rect_w(dc, r, rad, fill, border, S(1) > 0 ? S(1) : 1);
 }
 
 static void dot(HDC dc, int cx, int cy, int r, COLORREF c)
@@ -776,14 +859,22 @@ static void net_drain_status(void)
 static void set_armed(int on);
 static void invalidate_readouts(void);
 
+/* A Pico notice (the strip shows it with this severity until it is cleared). */
+static void pico_notice(const char *message, int sev)
+{
+    snprintf(g.local_pico_notice, sizeof g.local_pico_notice, "%s", message);
+    g.pico_sev = sev;
+    g.msg_stamp[MSRC_PICO] = ++g.msg_seq;
+    invalidate_readouts();
+}
+
 /* Disarm from the physical-through-Pico mode with the reason in the window:
  * the recent input list and LIVE INPUT on the Control tab. */
 static void loop_phys_stop(const char *message)
 {
     set_armed(0);
     history_add('w', message);
-    snprintf(g.local_pico_notice, sizeof g.local_pico_notice, "%s", message);
-    invalidate_readouts();
+    pico_notice(message, SEV_WARN);
 }
 
 static void net_tick(void)
@@ -1661,8 +1752,8 @@ static void set_armed(int on)
     int loop_phys = on && !replay.active && g.cfg.loopback_mode && g.cfg.loopback_physical;
     if(loop_phys&&hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
         history_add('w',LOOP_PHYS_NO_PICO);
-        snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",LOOP_PHYS_NO_PICO);
-        invalidate_readouts();badge_refresh();return;
+        pico_notice(LOOP_PHYS_NO_PICO,SEV_WARN);
+        badge_refresh();return;
     }
     if(on) {
         uint32_t session=0;
@@ -2117,100 +2208,135 @@ static RECT R(int l, int t, int r, int b)
     return x;
 }
 
-/* One window size for every tab. Header, tab strip and the ARM / Pico on
- * this PC / PANIC row are the same on every tab; the page between them
- * belongs to the selected tab. */
+/* The update banner shows only while disarmed and not replaying. */
+static int banner_visible(void)
+{
+    return g.update_offer == 1 && !g.armed && !replay.active;
+}
+
+/* One window size for every tab (logical px at 96 DPI):
+ *   rail   x 0-208   brand, state block, four facts, ARM, Pico on this PC,
+ *                    a divider and PANIC alone at the bottom
+ *   pane   x 208-700 tab strip (y 0-44), update banner (y 52-82, only while
+ *                    shown; the body then starts 38 px lower), body, and the
+ *                    one message strip at the foot (34 high, 46 for two
+ *                    lines, which takes the 12 px from the body).
+ * Everything is derived from these numbers; apply_layout() moves the child
+ * controls to what is computed here. */
 static void compute_layout(void)
 {
     layout_t *L = &g.L;
-    const int W = LAYOUT_W, P = 18, XL = P + 14, XR = W - P - 14, CX = 166;
-
+    const int W = LAYOUT_W, H = LAYOUT_H, RAIL = 208, X0 = 228, X1 = 680, X2 = 523;
     L->W = S(W);
-    L->H = S(LAYOUT_H);
-    L->mark = R(P, 14, P + 28, 42);
-    L->title_x = S(P + 40);
-    L->title_y = S(9);
-    L->sub_y = S(33);
-    L->pill = R(W - P - 140, 12, W - P, 38);
-    L->tabs = R(P, 56, W - P, 88);
-    L->page = R(0, 96, W, 456);
+    L->H = S(H);
 
-    L->arm = R(P, 462, 194, 508);
-    L->local_pico = R(202, 462, 344, 508);
-    L->panic = R(W - P - 150, 462, W - P, 508);
+    L->rail = R(0, 0, RAIL, H);
+    L->mark = R(16, 15, 42, 41);
+    L->title_x = S(51);
+    L->title_cy = S(28);
+    L->state = R(16, 56, 192, 120);
+    L->fact_x = S(16);
+    L->fact_vx = S(78);
+    for (int i = 0; i < 4; i++)
+        L->fact_cy[i] = S(144 + 28 * i);
+    L->arm = R(16, 261, 192, 319);
+    L->local_pico = R(16, 327, 192, 361);
+    L->div_y = S(373);
+    L->panic = R(16, 384, 192, 420);
 
-    /* Update banner: the header's second line (in place of the subtitle),
-     * left of the state pill, above the tab strip; nothing else moves. To
-     * place it elsewhere change b_l..b_b: the buttons follow its right edge. */
-    {
-        const int b_l = P + 40, b_t = 33, b_r = W - P - 148, b_b = 53;
-        L->banner = R(b_l, b_t, b_r, b_b);
-        L->banner_later = R(b_r - 50, b_t, b_r, b_b);
-        L->banner_now = R(b_r - 50 - 6 - 84, b_t, b_r - 56, b_b);
-    }
+    L->tabs = R(RAIL, 0, W, 44);
+    L->page = R(RAIL, 44, W, H);
 
-    /* Control: CONNECTION (tiles, Pico, route) and LIVE INPUT. The GAMING PC
-     * tile gets the remaining width so its WAKE chip sits clear of the label
-     * and the value. */
-    L->stats = R(P, 100, W - P, 226);
-    int x = XL;
+    int banner = banner_visible();
+    g.layout_banner = banner;
+    int top = g.msg_lines == 2 ? 374 : 386;
+    L->msg = R(X0, top, X1, 420);
+    const int Y = 58 + (banner ? 38 : 0), yb = top - 10;
+    L->body = R(X0, Y, X1, yb);
+
+    /* Update banner: the blue bar under the tab strip; its buttons follow its
+     * right edge (change the bar and they move with it). */
+    L->banner = R(X0, 52, X1, 82);
+    L->banner_later = R(X1 - 6 - 52, 55, X1 - 6, 79);
+    L->banner_now = R(X1 - 6 - 52 - 9 - 88, 55, X1 - 6 - 52 - 9, 79);
+
+    /* Control: section head, four tiles (the last gets the rest, so WAKE
+     * clears the label and the value), LIVE INPUT head and panel. Where the
+     * banner and a second message line take height, the gaps shrink. */
+    int tight = (yb - Y) < 290;
+    L->head_cy = S(Y + 10);
+    int ty = Y + (tight ? 26 : 28), x = X0;
     for (int i = 0; i < 4; i++) {
-        int w = i < 3 ? 96 : XR - x;
-        L->tiles[i] = R(x, 132, x + w, 182);
+        int w = i < 3 ? 96 : X1 - x;
+        L->tiles[i] = R(x, ty, x + w, ty + 58);
         x += w + 8;
     }
-    L->info_cy = S(205);
-    L->live = R(P, 238, W - P, 450); /* down to just above the action row, like the other tabs' cards */
+    int ht = ty + 58 + (tight ? 10 : 14), hh = tight ? 18 : 20;
+    L->live_head_cy = S(ht + hh / 2);
+    L->live = R(X0, ht + hh + (tight ? 6 : 8), X1, yb);
 
     /* Connection */
-    L->settings = R(P, 100, W - P, 240);
-    L->save = R(XR - 64, 106, XR, 130);
-    L->label_y = S(140);
-    const int fw[4] = {226, 72, 66, 72};
-    x = XL - 2;
-    for (int i = 0; i < 4; i++) {
-        L->frame[i] = R(x, 158, x + fw[i], 188);
-        x += fw[i] + 8;
-    }
-    L->conn_hint = R(XL, 198, XR, 236);
+    L->conn_head_cy[0] = S(Y + 10);
+    L->conn_lbl_cy[0] = S(Y + 31);
+    L->frame[0] = R(X0, Y + 40, X0 + 250, Y + 68);
+    L->frame[1] = R(X0 + 260, Y + 40, X0 + 344, Y + 68);
+    L->conn_head_cy[1] = S(Y + 88);
+    L->conn_lbl_cy[1] = S(Y + 109);
+    L->frame[2] = R(X0, Y + 118, X0 + 120, Y + 146);
+    L->frame[3] = R(X0 + 130, Y + 118, X0 + 250, Y + 146);
+    L->save = R(X1 - 72, Y + 118, X1, Y + 146);
+    L->conn_hint_cy = S(Y + 159);
+    L->conn_head_cy[2] = S(Y + 186);
+    L->link_cy = S(Y + 212); /* first of three rows, 20 apart */
 
-    /* Input: the former Input options window plus Keyboard/Mouse/Sources.
-     * Combo rectangles include their drop-down list height. */
-    L->input = R(P, 100, W - P, 450);
-    L->apply = R(XR - 120, 106, XR, 130);
-    L->row_route = S(152);
-    L->profile[0] = R(CX, 138, 325, 166);
-    L->profile[1] = R(329, 138, XR, 166);
-    L->row_relay = S(183);
-    L->cb[0] = R(CX, 172, CX + 96, 194);
-    L->cb[1] = R(CX + 104, 172, CX + 190, 194);
-    L->row_sources = S(209);
-    L->src[0] = R(CX, 198, CX + 90, 220);
-    L->src[1] = R(CX + 96, 198, CX + 190, 220);
-    L->src[2] = R(CX + 196, 198, XR, 220);
-    L->row_pointer = S(240);
-    L->pointer = R(CX, 226, XR, 226 + 160);
-    L->repeat = R(XL - 2, 260, XL + 190, 282);
-    L->row_button = S(302);
-    L->repeat_button = R(CX, 288, 300, 288 + 180);
-    L->repeat_cps = R(428, 288, XR, 316);
-    L->row_source = S(336);
-    L->repeat_source = R(CX, 322, XR, 322 + 200);
-    L->row_click = S(370);
-    L->click_cps = R(CX, 356, CX + 60, 384);
-    L->row_limited = S(400);
-    L->status = R(XL, 412, XR, 448);
+    /* Input: left column 254 wide, a vertical rule at x 502, right column
+     * x 523-680. Combo rectangles include their drop-down list height. The
+     * Physical note (Gaming PC route, Physical ticked) takes two lines under
+     * the Physical box and moves the rows below it down. */
+    L->in_route_cy = S(Y + 7);
+    L->seg = R(X0, Y + 16, X0 + 254, Y + 44);
+    L->profile[0] = R(X0 + 2, Y + 18, X0 + 126, Y + 42);
+    L->profile[1] = R(X0 + 128, Y + 18, X0 + 252, Y + 42);
+    L->in_desc_cy = S(Y + 55);
+    L->in_relay_cy = S(Y + 75);
+    L->cb[0] = R(X0, Y + 84, X0 + 96, Y + 108);
+    L->cb[1] = R(X0 + 108, Y + 84, X0 + 198, Y + 108);
+    L->in_src_cy = S(Y + 121);
+    L->src[0] = R(X0, Y + 130, X0 + 170, Y + 154);
+    int note = g.cfg.loopback_mode && g.pending.loopback_physical;
+    L->note_shown = note;
+    memset(&L->note, 0, sizeof L->note);
+    if (note)
+        L->note = R(X0 + 24, Y + 156, X0 + 254, Y + 190);
+    int sy = Y + (note ? 192 : 156);
+    L->src[1] = R(X0, sy, X0 + 104, sy + 24);
+    L->src[2] = R(X0 + 116, sy, X0 + 254, sy + 24);
+    L->in_ptr_cy = S(sy + 35);
+    L->pointer = R(X0, sy + 44, X0 + 254, sy + 44 + 28 + 2 * 24 + 6);
+    L->vr = R(502, Y, 503, Y + 264);
+    L->in_cap_cy = S(Y + 7);
+    L->repeat = R(X2, Y + 16, X2 + 157, Y + 40);
+    L->in_btn_cy = S(Y + 53);
+    L->in_cps_right = S(X1);
+    L->repeat_button = R(X2, Y + 62, X2 + 85, Y + 62 + 28 + 5 * 24 + 6);
+    L->repeat_cps = R(X2 + 93, Y + 62, X2 + 157, Y + 90);
+    L->in_rsrc_cy = S(Y + 103);
+    L->repeat_source = R(X2, Y + 112, X2 + 157, Y + 112 + 28 + 7 * 24 + 6);
+    L->in_click_cy = S(Y + 153);
+    L->click_cps = R(X2, Y + 162, X2 + 56, Y + 190);
+    L->limited = R(X2, Y + 194, X1, Y + 228);
+    L->apply = R(X1 - 120, Y + 236, X1, Y + 264);
 
-    /* Tools */
-    L->tools = R(P, 100, W - P, 174);
-    L->monitor_btn = R(XR - 222, 106, XR - 152, 130);
-    L->replay_btn = R(XR - 146, 106, XR - 76, 130);
-    L->updates = R(XR - 70, 106, XR, 130);
-    L->hk_cy = S(152);
-    L->recent = R(P, 186, W - P, 450);
-    L->history_cb = R(XR - 160, 194, XR - 80, 216);
-    L->clear = R(XR - 64, 193, XR, 217);
-    L->list = R(XL - 2, 226, XR + 2, 438);
+    /* Tools: three equal tool buttons, the hotkey keycaps, the Recent input
+     * head with History and Clear, and the list down to the message strip. */
+    L->monitor_btn = R(X0, Y, 373, Y + 54);
+    L->replay_btn = R(381, Y, 527, Y + 54);
+    L->updates = R(535, Y, X1, Y + 54);
+    L->hk_cy = S(Y + 78);
+    L->rh_cy = S(Y + 113);
+    L->clear = R(X1 - 56, Y + 101, X1, Y + 125);
+    L->history_cb = R(X1 - 56 - 6 - 84, Y + 101, X1 - 56 - 6, Y + 125);
+    L->list = R(X0, Y + 132, X1, yb);
 }
 
 /* Keep the window, and above all its action row, inside the work area. */
@@ -2253,8 +2379,8 @@ static void place_field(HWND edit, RECT f, int eh)
 }
 
 /* Controls of the other tabs are hidden: they keep their values, and hidden
- * windows are skipped by the dialog keyboard navigation. The action row and
- * the tab strip are never hidden. */
+ * windows are skipped by the dialog keyboard navigation. The rail's buttons
+ * and the tab strip are never hidden. */
 static void show_tab_controls(void)
 {
     struct { HWND h; int tab; } c[] = {
@@ -2288,10 +2414,10 @@ static void apply_layout(void)
     int eh = font_h(dc, g.f_body) + S(2);
     ReleaseDC(g.hwnd, dc);
 
-    place(g.tabs, L->tabs);
     place(g.arm, L->arm);
     place(g.local_pico_button, L->local_pico);
     place(g.panic, L->panic);
+    place(g.tabs, L->tabs);
     place(g.update_now, L->banner_now);
     place(g.update_later, L->banner_later);
 
@@ -2304,7 +2430,7 @@ static void apply_layout(void)
         if (!combos[i])
             continue;
         SendMessageA(combos[i], WM_SETFONT, (WPARAM)g.f_body, FALSE);
-        SendMessageA(combos[i], CB_SETITEMHEIGHT, (WPARAM)-1, S(22)); /* the closed box */
+        SendMessageA(combos[i], CB_SETITEMHEIGHT, (WPARAM)-1, S(24)); /* the closed box: 28 with its edge */
         SendMessageA(combos[i], CB_SETITEMHEIGHT, 0, S(24));          /* list items */
     }
     place(g.input_apply, L->apply);
@@ -2333,15 +2459,33 @@ static void apply_layout(void)
         SendMessageA(g.history, LB_SETITEMHEIGHT, 0, S(21));
 
     show_tab_controls();
+    if (g.tooltip) { /* the strip's tooltip follows the strip */
+        TTTOOLINFOA ti = {0};
+        ti.cbSize = TTTOOLINFOA_V2_SIZE;
+        ti.hwnd = g.hwnd;
+        ti.uId = ID_MSG_TIP;
+        ti.rect = L->msg;
+        SendMessageA(g.tooltip, TTM_NEWTOOLRECTA, 0, (LPARAM)&ti);
+    }
 }
 
-/* The header (state pill) and the page of the selected tab; the timer calls
- * this every 50 ms. Child controls are clipped and repaint themselves. */
+/* Compute again and move every control: after something that changes the
+ * body (the banner, a second message line, the Physical note). */
+static void relayout(void)
+{
+    compute_layout();
+    apply_layout();
+    if (g.hwnd)
+        RedrawWindow(g.hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+
+/* Everything except the child controls repaints; the timer calls this every
+ * 50 ms. Child controls are clipped and repaint themselves. */
 static void invalidate_readouts(void)
 {
     if (!g.hwnd)
         return;
-    RECT rc = {0, 0, g.L.W, g.L.page.bottom};
+    RECT rc = {0, 0, g.L.W, g.L.H};
     InvalidateRect(g.hwnd, &rc, FALSE);
 }
 
@@ -2362,10 +2506,29 @@ static HFONT mkfont(int tenths_px, int weight, const char *face)
                        DEFAULT_PITCH, face);
 }
 
+/* Cascadia Mono where installed, Consolas otherwise (GDI would substitute
+ * something proportional for a missing face). */
+static HFONT mkmono(int tenths_px, int weight)
+{
+    HFONT f = mkfont(tenths_px, weight, "Cascadia Mono");
+    HDC dc = GetDC(NULL);
+    HGDIOBJ old = SelectObject(dc, f);
+    char face[LF_FACESIZE] = {0};
+    GetTextFaceA(dc, LF_FACESIZE, face);
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    if (lstrcmpiA(face, "Cascadia Mono") != 0) {
+        DeleteObject(f);
+        f = mkfont(tenths_px, weight, "Consolas");
+    }
+    return f;
+}
+
 static void destroy_fonts(void)
 {
     HFONT *fs[] = {&g.f_title, &g.f_sub, &g.f_section, &g.f_label, &g.f_body, &g.f_pill,
-                   &g.f_tile, &g.f_mono, &g.f_mono_s, &g.f_btn, &g.f_btn_big, &g.f_chip};
+                   &g.f_tile, &g.f_mono, &g.f_mono_s, &g.f_btn, &g.f_btn_big, &g.f_chip,
+                   &g.f_tab, &g.f_timer, &g.f_arm_sub, &g.f_panic, &g.f_fact, &g.f_semi};
     for (size_t i = 0; i < sizeof fs / sizeof fs[0]; i++)
         if (*fs[i]) {
             DeleteObject(*fs[i]);
@@ -2373,22 +2536,31 @@ static void destroy_fonts(void)
         }
 }
 
+/* Sizes in tenths of a px: body 130, labels 120, captions 115, caps labels
+ * 110 semibold; tabs 130 semibold; brand 150; state word 170; timer 160 mono;
+ * ARM 190 bold with a 110 hotkey line; PANIC 140 bold; tile values 180 mono. */
 static void create_fonts(void)
 {
-    const char *disp = "Segoe UI Variable Display", *txt = "Segoe UI Variable Text", *mono = "Cascadia Mono";
+    const char *txt = "Segoe UI";
     destroy_fonts();
-    g.f_title = mkfont(195, FW_SEMIBOLD, disp);
-    g.f_sub = mkfont(120, FW_NORMAL, txt);
-    g.f_section = mkfont(108, FW_SEMIBOLD, txt);
+    g.f_title = mkfont(150, FW_SEMIBOLD, txt);
+    g.f_sub = mkfont(115, FW_NORMAL, txt);
+    g.f_section = mkfont(110, FW_SEMIBOLD, txt);
     g.f_label = mkfont(120, FW_NORMAL, txt);
     g.f_body = mkfont(130, FW_NORMAL, txt);
-    g.f_pill = mkfont(118, FW_SEMIBOLD, txt);
-    g.f_tile = mkfont(170, FW_SEMIBOLD, mono);
-    g.f_mono = mkfont(120, FW_NORMAL, mono);
-    g.f_mono_s = mkfont(115, FW_NORMAL, mono);
+    g.f_pill = mkfont(170, FW_SEMIBOLD, txt);
+    g.f_tile = mkmono(180, FW_SEMIBOLD);
+    g.f_mono = mkmono(120, FW_NORMAL);
+    g.f_mono_s = mkmono(115, FW_NORMAL);
     g.f_btn = mkfont(125, FW_SEMIBOLD, txt);
-    g.f_btn_big = mkfont(145, FW_SEMIBOLD, disp);
-    g.f_chip = mkfont(115, FW_SEMIBOLD, txt);
+    g.f_btn_big = mkfont(190, FW_BOLD, txt);
+    g.f_chip = mkfont(110, FW_SEMIBOLD, txt);
+    g.f_tab = mkfont(130, FW_SEMIBOLD, txt);
+    g.f_timer = mkmono(160, FW_SEMIBOLD);
+    g.f_arm_sub = mkfont(110, FW_NORMAL, txt);
+    g.f_panic = mkfont(140, FW_BOLD, txt);
+    g.f_fact = mkfont(125, FW_NORMAL, txt);
+    g.f_semi = mkfont(130, FW_SEMIBOLD, txt);
 }
 
 static void load_mark_icon(void)
@@ -2400,40 +2572,320 @@ static void load_mark_icon(void)
 }
 
 /* ======================================================================== */
+/*  Glyphs (anti-aliased with GDI+). Colour never carries a state alone:     */
+/*  hollow circle = off / idle, filled dot = good, ring = armed, triangle =  */
+/*  problem, half circle = partial, octagon = PANIC.                         */
+/* ======================================================================== */
+
+enum { G_HOLLOW, G_HOLLOW_AMBER, G_FILL, G_RING, G_TRI, G_TRI_AMBER, G_HALF, G_OCT, G_CHECK,
+       G_INFO, G_UPG };
+
+static void gp_pen(void **pen, COLORREF c, float w)
+{
+    GdipCreatePen1(argb(c), w, 2 /* UnitPixel */, pen);
+    GdipSetPenStartCap(*pen, 2);
+    GdipSetPenEndCap(*pen, 2);
+    GdipSetPenLineJoin(*pen, 2);
+}
+
+static void gp_fill_ellipse(void *gr, COLORREF c, float x, float y, float w, float h)
+{
+    void *b = NULL;
+    GdipCreateSolidFill(argb(c), &b);
+    GdipFillEllipse(gr, b, x, y, w, h);
+    GdipDeleteBrush(b);
+}
+
+static void gp_fill_rect(void *gr, COLORREF c, float x, float y, float w, float h)
+{
+    void *b = NULL;
+    GdipCreateSolidFill(argb(c), &b);
+    GdipFillRectangle(gr, b, x, y, w, h);
+    GdipDeleteBrush(b);
+}
+
+/* A glyph centred on (cx, cy); `bg` is what lies behind it (the triangle's
+ * and the octagon's bar are cut out in that colour). */
+static void glyph(HDC dc, int kind, int cx, int cy, COLORREF bg)
+{
+    float u = (float)g.dpi / 96.0f, x = (float)cx, y = (float)cy;
+    void *gr = gp_begin(dc), *pen = NULL;
+    switch (kind) {
+    case G_HOLLOW:
+    case G_HOLLOW_AMBER:
+        gp_pen(&pen, kind == G_HOLLOW ? W_TEXT3 : W_AMBER, 2 * u);
+        GdipDrawEllipse(gr, pen, x - 4 * u, y - 4 * u, 8 * u, 8 * u);
+        break;
+    case G_FILL:
+        gp_fill_ellipse(gr, W_GREEN, x - 5 * u, y - 5 * u, 10 * u, 10 * u);
+        break;
+    case G_RING:
+        gp_pen(&pen, W_GREEN, 2 * u);
+        GdipDrawEllipse(gr, pen, x - 6 * u, y - 6 * u, 12 * u, 12 * u);
+        gp_fill_ellipse(gr, W_GREEN, x - 3 * u, y - 3 * u, 6 * u, 6 * u);
+        break;
+    case G_TRI:
+    case G_TRI_AMBER: {
+        HW_PointF p[3] = {{x, y - 6 * u}, {x + 7 * u, y + 6 * u}, {x - 7 * u, y + 6 * u}};
+        void *b = NULL;
+        GdipCreateSolidFill(argb(kind == G_TRI ? W_RED : W_AMBER), &b);
+        GdipFillPolygon(gr, b, p, 3, 0);
+        GdipDeleteBrush(b);
+        gp_fill_rect(gr, bg, x - 1 * u, y - 2 * u, 2 * u, 5 * u); /* the bar */
+        break;
+    }
+    case G_HALF: {
+        void *b = NULL;
+        gp_pen(&pen, W_AMBER, 2 * u);
+        GdipDrawEllipse(gr, pen, x - 4 * u, y - 4 * u, 8 * u, 8 * u);
+        GdipCreateSolidFill(argb(W_AMBER), &b);
+        GdipFillPie(gr, b, x - 5 * u, y - 5 * u, 10 * u, 10 * u, 90.0f, 180.0f);
+        GdipDeleteBrush(b);
+        break;
+    }
+    case G_OCT: {
+        float l = x - 7 * u, t = y - 7 * u, a = 4.2f * u, b2 = 9.8f * u, e = 14 * u;
+        HW_PointF p[8] = {{l + a, t}, {l + b2, t}, {l + e, t + a}, {l + e, t + b2},
+                          {l + b2, t + e}, {l + a, t + e}, {l, t + b2}, {l, t + a}};
+        void *b = NULL;
+        GdipCreateSolidFill(argb(W_RED_TX), &b);
+        GdipFillPolygon(gr, b, p, 8, 0);
+        GdipDeleteBrush(b);
+        gp_fill_rect(gr, bg, l + 3 * u, t + 6 * u, 8 * u, 2 * u); /* the bar */
+        break;
+    }
+    case G_CHECK: {
+        HW_PointF p[3] = {{x - 4.5f * u, y + 0.5f * u}, {x - 1.5f * u, y + 3.5f * u}, {x + 4.5f * u, y - 3.5f * u}};
+        gp_pen(&pen, W_GREEN, 2 * u);
+        GdipDrawLines(gr, pen, p, 3);
+        break;
+    }
+    case G_INFO:
+        gp_pen(&pen, W_TEXT2, 1.5f * u);
+        GdipDrawEllipse(gr, pen, x - 5.25f * u, y - 5.25f * u, 10.5f * u, 10.5f * u);
+        gp_fill_rect(gr, W_TEXT2, x - 0.75f * u, y - 0.5f * u, 1.5f * u, 4 * u);
+        gp_fill_ellipse(gr, W_TEXT2, x - 0.9f * u, y - 3.4f * u, 1.8f * u, 1.8f * u);
+        break;
+    case G_UPG: {
+        HW_PointF stem[2] = {{x, y - 4.5f * u}, {x, y + 3.5f * u}};
+        HW_PointF head[3] = {{x - 3.2f * u, y + 0.4f * u}, {x, y + 3.6f * u}, {x + 3.2f * u, y + 0.4f * u}};
+        gp_fill_ellipse(gr, W_UPD_ICO, x - 8 * u, y - 8 * u, 16 * u, 16 * u);
+        gp_pen(&pen, W_UPD, 2 * u);
+        GdipDrawLines(gr, pen, stem, 2);
+        GdipDrawLines(gr, pen, head, 3);
+        break;
+    }
+    }
+    if (pen)
+        GdipDeletePen(pen);
+    GdipDeleteGraphics(gr);
+}
+
+/* Radio dot of the route selector: filled when selected, a ring otherwise. */
+static void radio(HDC dc, int cx, int cy, int on, COLORREF c)
+{
+    float u = (float)g.dpi / 96.0f;
+    void *gr = gp_begin(dc), *pen = NULL;
+    if (on) {
+        gp_fill_ellipse(gr, c, (float)cx - 4 * u, (float)cy - 4 * u, 8 * u, 8 * u);
+    } else {
+        gp_pen(&pen, c, 1.5f * u);
+        GdipDrawEllipse(gr, pen, (float)cx - 3.25f * u, (float)cy - 3.25f * u, 6.5f * u, 6.5f * u);
+        GdipDeletePen(pen);
+    }
+    GdipDeleteGraphics(gr);
+}
+
+/* ======================================================================== */
+/*  The one message strip                                                   */
+/* ======================================================================== */
+
+/* Every message the window shows lives in one of three buffers that exist
+ * (and are tested) as before: the Connection status line, the Input status
+ * line and the Pico notice. The strip shows the one that spoke last, with
+ * the severity its writer gave it, for as long as that buffer is not empty;
+ * when none is, the hotkey warning, the Input tab's own hint, the armed line
+ * or the idle line. Nothing here changes when a message appears or goes. */
+static void msg_touch(int src)
+{
+    g.msg_stamp[src] = ++g.msg_seq;
+}
+
+static void hotkey_msg(char *out, size_t cap)
+{
+    char hk[48];
+    hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
+    snprintf(out, cap, "Toggle hotkey %s is in use — set toggle_hotkey in hidway.ini", hk);
+}
+
+/* The text and severity the strip shows now. */
+static void msg_current(char *out, size_t cap, int *sev)
+{
+    /* the Pico notice was shown by LIVE INPUT only while disarmed: not while ARMED */
+    const char *t[MSRC_COUNT] = {g.conn_status, g.input_status, g.armed ? "" : g.local_pico_notice};
+    /* Each message was shown on one tab before; on that tab it is shown first
+     * (the hotkey warning was on Tools), on the others the latest one. */
+    int home = g.tab == TAB_CONNECTION ? MSRC_CONN : g.tab == TAB_INPUT ? MSRC_INPUT
+             : g.tab == TAB_CONTROL ? MSRC_PICO : -1;
+    int src = home >= 0 && t[home][0] ? home : -1;
+    if (src < 0 && g.tab == TAB_TOOLS && !g.toggle_hk_ok) {
+        hotkey_msg(out, cap);
+        *sev = SEV_WARN;
+        return;
+    }
+    if (src < 0)
+        for (int i = 0; i < MSRC_COUNT; i++)
+            if (t[i][0] && (src < 0 || g.msg_stamp[i] >= g.msg_stamp[src]))
+                src = i;
+    if (src >= 0) {
+        snprintf(out, cap, "%s", t[src]);
+        *sev = src == MSRC_CONN ? (g.conn_error ? SEV_ERR : SEV_INFO)
+             : src == MSRC_INPUT ? (g.input_error ? SEV_ERR : SEV_OK)
+             : g.pico_sev;
+        return;
+    }
+    if (!g.toggle_hk_ok) {
+        hotkey_msg(out, cap);
+        *sev = SEV_WARN;
+        return;
+    }
+    if (g.tab == TAB_INPUT) { /* what the Input tab used to say under its fields */
+        int loop = g.cfg.loopback_mode != 0, through_pico = loop && g.pending.loopback_physical;
+        *sev = g.input_dirty ? SEV_WARN : SEV_INFO;
+        snprintf(out, cap, "%s",
+                 g.input_dirty ? (through_pico ? "Changes not applied yet. Programs that read Raw Input still see "
+                                                 "this PC's own keyboard and mouse too."
+                                               : "Changes not applied yet. Apply and save disarms first, then saves.")
+                 : through_pico ? "Programs that read Raw Input still see this PC's own keyboard and mouse too. "
+                                  "The pointer stays native. Apply and save disarms first."
+                 : loop ? "Gaming PC: virtual input only; Physical and Touchpad stay local. Apply and "
+                          "save disarms first; changes not applied are dropped when you leave this tab."
+                        : "Apply and save disarms first; changes not applied are dropped when you leave "
+                          "this tab. Hold to repeat replaces dragging for its button.");
+        return;
+    }
+    if (g.armed) {
+        char hk[48];
+        hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
+        snprintf(out, cap, "Armed. Toggle with %s. PANIC releases every key and button.", hk);
+        *sev = SEV_OK;
+        return;
+    }
+    snprintf(out, cap, "Ready. Nothing is sent until you press ARM.");
+    *sev = SEV_INFO;
+}
+
+static int msg_text_w(void)
+{
+    return (g.L.msg.right - g.L.msg.left) - S(45); /* bar, padding, glyph, gap, padding */
+}
+
+/* Lines `s` needs at `width` (word wrap, explicit breaks count). */
+static int text_lines(HDC dc, HFONT f, const char *s, int width)
+{
+    WCHAR w[512];
+    RECT r = {0, 0, width, 0};
+    if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, 512))
+        w[0] = 0;
+    SelectObject(dc, f);
+    DrawTextW(dc, w, -1, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    int h = font_h(dc, f);
+    return h > 0 ? (r.bottom - r.top + h - 1) / h : 1;
+}
+
+/* One line or two: the strip grows by 12 px at the body's expense. Called
+ * from the 50 ms timer and whenever the tab changes, so it follows messages
+ * without any writer having to know about layout. Also moves the rows of the
+ * Input tab when the Physical note appears. */
+static void msg_sync(void)
+{
+    if (!g.hwnd)
+        return;
+    char text[256];
+    int sev;
+    msg_current(text, sizeof text, &sev);
+    HDC dc = GetDC(g.hwnd);
+    int lines = text_lines(dc, g.f_fact, text, msg_text_w()) >= 2 ? 2 : 1;
+    ReleaseDC(g.hwnd, dc);
+    int note = g.cfg.loopback_mode && g.pending.loopback_physical;
+    if (lines != (g.msg_lines == 2 ? 2 : 1) || note != g.L.note_shown) {
+        g.msg_lines = lines;
+        relayout();
+    }
+}
+
+/* A message that needs more than two lines ends in an ellipsis in the strip;
+ * its whole text is then the strip's tooltip (empty when it fits). */
+static int msg_tip_text(char *out, size_t cap)
+{
+    int sev;
+    out[0] = 0;
+    if (!g.hwnd)
+        return 0;
+    msg_current(out, cap, &sev);
+    HDC dc = GetDC(g.hwnd);
+    int over = text_lines(dc, g.f_fact, out, msg_text_w()) > 2;
+    ReleaseDC(g.hwnd, dc);
+    if (!over)
+        out[0] = 0;
+    return over;
+}
+
+static void text_wrap(HDC dc, HFONT f, COLORREF c, RECT r, UINT fmt, const char *s)
+{
+    WCHAR w[512];
+    if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, 512))
+        w[0] = 0;
+    SelectObject(dc, f);
+    SetTextColor(dc, c);
+    SetBkMode(dc, TRANSPARENT);
+    DrawTextW(dc, w, -1, &r, fmt | DT_NOPREFIX);
+}
+
+static void paint_msg(HDC dc)
+{
+    char text[256];
+    int sev;
+    msg_current(text, sizeof text, &sev);
+    RECT m = g.L.msg;
+    COLORREF bg = sev == SEV_ERR ? W_MSG_ERR_BG : sev == SEV_WARN ? W_MSG_WARN_BG : W_SURF;
+    COLORREF bar = sev == SEV_ERR ? W_RED : sev == SEV_WARN ? W_AMBER : sev == SEV_OK ? W_GREEN : W_LINE2;
+    COLORREF tx = sev == SEV_ERR ? W_MSG_ERR_TX : sev == SEV_WARN ? W_MSG_WARN_TX
+                : sev == SEV_OK ? W_MSG_OK_TX : W_TEXT2;
+    round_rect(dc, m, S(6), bg, W_LINE);
+    RECT b = {m.left, m.top + S(3), m.left + S(3), m.bottom - S(3)};
+    round_rect(dc, b, S(1), bar, bar);
+    int cy = (m.top + m.bottom) / 2;
+    glyph(dc, sev == SEV_ERR ? G_TRI : sev == SEV_WARN ? G_TRI_AMBER : sev == SEV_OK ? G_CHECK : G_INFO,
+          m.left + S(3 + 11 + 6), cy, bg);
+    int tw = msg_text_w(), th = text_lines(dc, g.f_fact, text, tw) * font_h(dc, g.f_fact);
+    int max_h = 2 * font_h(dc, g.f_fact);
+    if (th > max_h)
+        th = max_h;
+    RECT t = {m.left + S(35), cy - th / 2, m.left + S(35) + tw, cy - th / 2 + th};
+    text_wrap(dc, g.f_fact, tx, t, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS, text);
+}
+
+/* ======================================================================== */
 /*  Painting                                                                */
 /* ======================================================================== */
 
-static void card(HDC dc, RECT r, const char *title)
-{
-    round_rect(dc, r, S(10), C_CARD, C_CARD_BD);
-    tracked(dc, g.f_section, C_TEXT3, r.left + S(14), r.top + S(12), title);
-}
-
-static int title_cy(RECT card_rect)
-{
-    return card_rect.top + S(12) + S(7);
-}
-
 /* ---- update banner ------------------------------------------------------
  * One read-only check per start (update_check.c); when it finds a newer
- * stable release, a slim line in the header offers Update now / Later. It is
- * hidden while armed or replaying and never touches the action row. Its
- * layout is L->banner*, its painting paint_banner(), its buttons draw_button(). */
-
-static int banner_visible(void)
-{
-    return g.update_offer == 1 && !g.armed && !replay.active;
-}
+ * stable release, a blue bar under the tab strip offers Update now / Later.
+ * It is hidden while armed or replaying and the body starts 38 px lower
+ * while it shows. Its layout is L->banner*, its painting paint_banner(), its
+ * buttons draw_button(). */
 
 static int control_shown(HWND h)
 {
     return h && (GetWindowLongPtrA(h, GWL_STYLE) & WS_VISIBLE) != 0;
 }
 
-/* Show or hide the banner buttons to match banner_visible(). Called from the
- * UI timer, so arming hides them within one tick; the painted text follows
- * banner_visible() at once. The focus is moved only while disarmed: while
- * armed the badge may own it. */
+/* Show or hide the banner buttons to match banner_visible(), and move the
+ * body when that changes. Called from the UI timer, so arming hides them
+ * within one tick; the painted text follows banner_visible() at once. The
+ * focus is moved only while disarmed: while armed the badge may own it. */
 static void banner_sync(void)
 {
     int on = banner_visible(), changed = 0;
@@ -2446,20 +2898,26 @@ static void banner_sync(void)
         ShowWindow(b[i], on ? SW_SHOWNA : SW_HIDE);
         changed = 1;
     }
-    if (changed && g.hwnd)
+    if (g.hwnd && on != g.layout_banner)
+        relayout();
+    else if (changed && g.hwnd)
         InvalidateRect(g.hwnd, &g.L.banner, FALSE);
 }
 
 static void paint_banner(HDC dc)
 {
-    RECT t = g.L.banner;
-    t.right = g.L.banner_now.left - S(8);
+    layout_t *L = &g.L;
+    round_rect(dc, L->banner, S(6), W_UPD, W_UPD_BD);
+    glyph(dc, G_UPG, L->banner.left + S(10 + 8), (L->banner.top + L->banner.bottom) / 2, W_UPD);
+    RECT t = L->banner;
+    t.left += S(10 + 16 + 9);
+    t.right = L->banner_now.left - S(8);
     char text[96];
     if (g.update_notice[0])
         snprintf(text, sizeof text, "%s", g.update_notice);
     else
         snprintf(text, sizeof text, "HIDway %s is available", g.update_tag);
-    text_in(dc, g.f_label, g.update_notice[0] ? C_WARN : C_TEXT, t,
+    text_in(dc, g.f_btn, g.update_notice[0] ? W_RED_TX : W_UPD_TX, t,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX, text);
 }
 
@@ -2530,50 +2988,6 @@ static void update_check_start(void)
     hw_update_check_begin(g.hwnd, WM_UPDATE_RESULT);
 }
 
-static void paint_header(HDC dc)
-{
-    layout_t *L = &g.L;
-    if (g.mark_icon)
-        DrawIconEx(dc, L->mark.left, L->mark.top, g.mark_icon, L->mark.right - L->mark.left,
-                   L->mark.bottom - L->mark.top, 0, NULL, DI_NORMAL);
-    text_at(dc, g.f_title, C_TEXT, L->title_x, L->title_y, "HIDway");
-    /* the version on the title's baseline, with room up to the state pill */
-    int version_top = L->title_y + font_ascent(dc, g.f_title) - font_ascent(dc, g.f_label);
-    RECT version={L->title_x + text_w(dc,g.f_title,"HIDway")+S(8),
-        version_top,L->pill.left-S(10),version_top+font_h(dc,g.f_label)};
-    text_in(dc,g.f_label,C_TEXT3,version,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS,HIDWAY_VERSION);
-    if (banner_visible())
-        paint_banner(dc); /* in place of the subtitle */
-    else
-        text_at(dc, g.f_sub, C_TEXT3, L->title_x, L->sub_y, "Remote keyboard & mouse over real USB HID");
-
-    RECT p = L->pill;
-    COLORREF fill = g.armed ? C_LIVE_F : C_FIELD;
-    COLORREF bd = g.armed ? C_LIVE_BD : C_FIELD_BD;
-    COLORREF dc_ = g.armed ? C_LIVE : C_TEXT3;
-    COLORREF tx = g.armed ? C_LIVE_TX : C_TEXT2;
-    char label[32] = "DISARMED";
-    if (g.armed) { /* with how long it has been armed */
-        unsigned s = (timeGetTime() - g.armed_at_ms) / 1000;
-        if (s < 3600)
-            snprintf(label, sizeof label, "ARMED %02u:%02u", s / 60, s % 60);
-        else
-            snprintf(label, sizeof label, "ARMED %u:%02u:%02u", s / 3600, s / 60 % 60, s % 60);
-    }
-    round_rect(dc, p, (p.bottom - p.top) / 2, fill, bd);
-
-    SetTextCharacterExtra(dc, S(1));
-    int tw = text_w(dc, g.f_pill, label);
-    SetTextCharacterExtra(dc, 0);
-    int dd = S(8), gap = S(8);
-    int gx = p.left + ((p.right - p.left) - (dd + gap + tw)) / 2;
-    int cy = (p.top + p.bottom) / 2;
-    dot(dc, gx + dd / 2, cy, dd / 2, dc_);
-    SetTextCharacterExtra(dc, S(1));
-    text_vc(dc, g.f_pill, tx, gx + dd + gap, cy, label);
-    SetTextCharacterExtra(dc, 0);
-}
-
 /* Pico on this PC, from the last read-only Raw Input inventory. */
 static const char *pico_text(COLORREF *color)
 {
@@ -2589,45 +3003,249 @@ static const char *route_name(int loopback)
     return loopback ? "Gaming PC" : "Remote PC";
 }
 
-static void paint_stats(HDC dc)
+/* Relay status: the full text (Control head, Connection), the short one for
+ * the rail, a glyph and a text colour. */
+static const char *relay_status(const char **short_text, int *kind, COLORREF *color)
+{
+    if (g.key_error) { *short_text = "invalid key"; *kind = G_TRI; *color = W_RED_TX; return "invalid key in hidway.ini"; }
+    if (!g.net_ok && !g.preview) { *short_text = "socket error"; *kind = G_TRI; *color = W_RED_TX; return "socket error"; }
+    if (!g.armed) {
+        if (link_recent()) { *short_text = "reachable"; *kind = G_FILL; *color = W_GREEN_TX; return "relay reachable"; }
+        if (g.ever_status || g.probes_unanswered > 5) { *short_text = "no reply"; *kind = G_TRI; *color = W_RED_TX; return "no reply from relay"; }
+        *short_text = "probing"; *kind = G_HOLLOW; *color = W_TEXT2;
+        return "probing relay";
+    }
+    if (!g.status_seen) { *short_text = "waiting"; *kind = G_HOLLOW_AMBER; *color = W_AMBER; return "waiting for relay"; }
+    if (link_recent()) {
+        *short_text = "linked"; *kind = G_FILL; *color = W_GREEN_TX;
+        return (g.pi_flags & HIDWAY_STATUS_SERIAL_OPEN) ? "linked · serial open" : "linked · no serial";
+    }
+    *short_text = "link lost"; *kind = G_TRI; *color = W_RED_TX;
+    return "link lost";
+}
+
+/* Target PC as the Pico sees it over USB, reported through the relay. */
+static const char *target_text(COLORREF *color)
+{
+    int ts = target_state();
+    *color = W_TEXT2;
+    if (ts < 0) { *color = W_TEXT3; return "—"; }
+    if (waking()) { *color = W_AMBER; return "Waking"; }
+    if (ts == HIDWAY_TARGET_ON) { *color = W_GREEN_TX; return "On"; }
+    if (ts == HIDWAY_TARGET_ASLEEP) { *color = W_AMBER; return "Asleep"; }
+    if (ts == HIDWAY_TARGET_OFF) return "Off";
+    return "Off?"; /* no report: Pico without power (PC off) or unplugged */
+}
+
+/* ---- rail ---------------------------------------------------------------- */
+
+/* Text that must end inside `right`: an ellipsis, never a silent clip. */
+static void text_fit(HDC dc, HFONT f, COLORREF c, int x, int cy, int right, const char *s)
+{
+    RECT r = {x, cy - font_h(dc, f) / 2 - S(1), right, cy + font_h(dc, f) / 2 + S(2)};
+    text_in(dc, f, c, r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, s);
+}
+
+static void fact_value(HDC dc, int i, int kind, COLORREF color, const char *text)
 {
     layout_t *L = &g.L;
-    card(dc, L->stats, "CONNECTION");
+    int cy = L->fact_cy[i], x = L->fact_vx;
+    if (kind >= 0) {
+        glyph(dc, kind, x + S(5), cy, W_RAIL);
+        x += S(17);
+    }
+    text_fit(dc, g.f_fact, color, x, cy, L->rail.right - S(16), text);
+}
 
-    /* end-to-end encryption badge next to the title */
-    int bx = L->stats.left + S(14) + tracked_w(dc, g.f_section, "CONNECTION") + S(10);
-    if (g.key_error)
-        chip(dc, bx, title_cy(L->stats), S(18), "KEY ERROR", C_DNG, C_DNG_BD, C_DNG_TX);
-    else if (g.crypto_on)
-        chip(dc, bx, title_cy(L->stats), S(18), "E2E", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
+static void paint_rail(HDC dc)
+{
+    layout_t *L = &g.L;
+    fill_solid(dc, L->rail, W_RAIL);
+    RECT ln = {L->rail.right - S(1), 0, L->rail.right, L->rail.bottom};
+    fill_solid(dc, ln, W_LINE);
+
+    /* brand and version (the subtitle is gone) */
+    if (g.mark_icon)
+        DrawIconEx(dc, L->mark.left, L->mark.top, g.mark_icon, L->mark.right - L->mark.left,
+                   L->mark.bottom - L->mark.top, 0, NULL, DI_NORMAL);
+    int tw = text_w(dc, g.f_title, "HIDway");
+    text_vc(dc, g.f_title, W_TEXT, L->title_x, L->title_cy, "HIDway");
+    int top = L->title_cy - font_h(dc, g.f_title) / 2;
+    int vtop = top + font_ascent(dc, g.f_title) - font_ascent(dc, g.f_label);
+    RECT ver = {L->title_x + tw + S(8), vtop, L->rail.right - S(16), vtop + font_h(dc, g.f_label)};
+    text_in(dc, g.f_label, W_TEXT3, ver, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, HIDWAY_VERSION);
+
+    /* state block: DISARMED and the route, or ARMED with the running timer */
+    RECT s = L->state;
+    int u2 = S(2) > 0 ? S(2) : 2;
+    if (g.armed)
+        round_rect_w(dc, s, S(10), W_GREEN_F, W_GREEN, u2);
     else
-        chip(dc, bx, title_cy(L->stats), S(18), "E2E OFF", C_FIELD, C_FIELD_BD, C_TEXT3);
+        round_rect(dc, s, S(10), W_SURF, W_LINE2);
+    int gw = g.armed ? 14 : 10;
+    glyph(dc, g.armed ? G_RING : G_HOLLOW, s.left + S(12 + 7), s.top + S(g.armed ? 24 : 22), g.armed ? W_GREEN_F : W_SURF);
+    int tx = s.left + S(12 + gw + 11), wcy = s.top + S(23), scy = s.top + S(43);
+    const char *word = g.armed ? "ARMED" : "DISARMED";
+    text_vc(dc, g.f_pill, g.armed ? W_ARMED_TX : W_TEXT, tx, wcy, word);
+    if (g.armed) {
+        unsigned secs = (timeGetTime() - g.armed_at_ms) / 1000;
+        char t[24];
+        if (secs < 3600)
+            snprintf(t, sizeof t, "%02u:%02u", secs / 60, secs % 60);
+        else
+            snprintf(t, sizeof t, "%u:%02u:%02u", secs / 3600, secs / 60 % 60, secs % 60);
+        int x = tx + text_w(dc, g.f_pill, word) + S(6);
+        HFONT tf = g.f_timer;
+        if (x + text_w(dc, tf, t) > s.right - S(12)) /* hours: the smaller face */
+            tf = g.f_mono;
+        text_vc(dc, tf, W_GREEN_TX, x, wcy, t);
+    }
+    char sub[48];
+    if (g.armed)
+        snprintf(sub, sizeof sub, "%s", g.cfg.loopback_mode ? "Through the Pico" : "To the Gaming PC");
+    else
+        snprintf(sub, sizeof sub, "%s route", route_name(g.cfg.loopback_mode));
+    text_fit(dc, g.f_label, g.armed ? W_ARMED_SUB : W_TEXT3, tx, scy, s.right - S(12), sub);
 
-    /* status on the right of the title row */
-    COLORREF sc;
+    /* ROUTE, RELAY, PICO, TARGET: a glyph and a word each */
+    static const char *const names[4] = {"ROUTE", "RELAY", "PICO", "TARGET"};
+    for (int i = 0; i < 4; i++)
+        tracked(dc, g.f_section, W_TEXT3, L->fact_x, L->fact_cy[i] - font_h(dc, g.f_section) / 2, names[i]);
+    text_fit(dc, g.f_btn, W_TEXT, L->fact_vx, L->fact_cy[0], L->rail.right - S(16),
+             route_name(g.cfg.loopback_mode));
     const char *st;
-    if (g.key_error) { sc = C_WARN; st = "invalid key in hidway.ini"; }
-    else if (!g.net_ok && !g.preview) { sc = C_WARN; st = "socket error"; }
-    else if (!g.armed) {
-        if (link_recent()) { sc = C_LIVE; st = "relay reachable"; }
-        else if (g.ever_status || g.probes_unanswered > 5) { sc = C_WARN; st = "no reply from relay"; }
-        else { sc = C_TEXT3; st = "probing relay"; }
-    } else if (!g.status_seen) { sc = C_AMBER; st = "waiting for relay"; }
-    else if (link_recent()) { sc = C_LIVE; st = (g.pi_flags & HIDWAY_STATUS_SERIAL_OPEN) ? "linked · serial open" : "linked · no serial"; }
-    else { sc = C_WARN; st = "link lost"; }
+    int kind;
+    COLORREF col;
+    relay_status(&st, &kind, &col);
+    fact_value(dc, 1, kind, col, st);
+    COLORREF pc;
+    const char *pt = pico_text(&pc);
+    fact_value(dc, 2, pc == C_LIVE ? G_FILL : pc == C_AMBER ? G_HALF : G_HOLLOW,
+               pc == C_LIVE ? W_GREEN_TX : pc == C_AMBER ? W_AMBER : W_TEXT2, pt);
+    COLORREF tc;
+    const char *tt = target_text(&tc);
+    char full[40];
+    if (tt[0] == '\xe2') /* no report: just the dash */
+        snprintf(full, sizeof full, "%s", tt);
+    else
+        snprintf(full, sizeof full, "Gaming PC %c%s", (char)tolower((unsigned char)tt[0]), tt + 1);
+    if (text_w(dc, g.f_fact, full) > L->rail.right - S(16) - (L->fact_vx + S(17)))
+        snprintf(full, sizeof full, "%s", tt); /* too wide for the rail: the state alone */
+    int ts = target_state();
+    fact_value(dc, 3, tc == W_GREEN_TX ? G_FILL : tc == W_AMBER ? (waking() ? G_HALF : G_HOLLOW_AMBER) : G_HOLLOW,
+               tc == W_TEXT3 ? W_TEXT2 : tc, ts < 0 && !waking() ? tt : full);
 
+    RECT dv = {L->fact_x, L->div_y, L->rail.right - S(16), L->div_y + (S(1) > 0 ? S(1) : 1)};
+    fill_solid(dc, dv, W_LINE);
+}
+
+/* ---- Control ------------------------------------------------------------- */
+
+/* One key/value row of the summaries. */
+static void kv_row(HDC dc, int lx, int vx, int right, int cy, const char *k, const char *v)
+{
+    text_vc(dc, g.f_fact, W_TEXT3, lx, cy, k);
+    text_fit(dc, g.f_fact, W_TEXT, vx, cy, right, v);
+}
+
+/* What ARM will send, from the saved settings. */
+static void summary_text(int row, char *out, size_t cap)
+{
+    const hidway_config_t *c = &g.cfg;
+    static const char *const buttons[] = {"Left", "Right", "Middle", "Back", "Forward"};
+    switch (row) {
+    case 0:
+        snprintf(out, cap, "%s %s",
+                 c->relay_keyboard && c->relay_mouse ? "Keyboard + mouse"
+                 : c->relay_keyboard ? "Keyboard" : c->relay_mouse ? "Mouse" : "Nothing",
+                 c->loopback_mode ? "through the Pico to this PC" : "to the Gaming PC");
+        break;
+    case 1:
+        out[0] = 0;
+        if (c->loopback_mode) {
+            snprintf(out, cap, "%s", c->loopback_physical ? "Virtual, Physical through Pico" : "Virtual");
+        } else {
+            if (c->source_physical) strncat(out, "Physical", cap - strlen(out) - 1);
+            if (c->source_touchpad) strncat(out, out[0] ? ", Touchpad" : "Touchpad", cap - strlen(out) - 1);
+            if (c->source_virtual) strncat(out, out[0] ? ", Virtual" : "Virtual", cap - strlen(out) - 1);
+            if (!out[0]) snprintf(out, cap, "none");
+        }
+        break;
+    case 2:
+        if (c->repeat_enabled)
+            snprintf(out, cap, "repeat %s %d/s, %d/s",
+                     buttons[c->repeat_button >= 0 && c->repeat_button < 5 ? c->repeat_button : 0],
+                     c->repeat_cps, c->virtual_click_cps);
+        else
+            snprintf(out, cap, "repeat off, %d/s", c->virtual_click_cps);
+        break;
+    default:
+        if (c->auto_disarm_ms <= 0)
+            snprintf(out, cap, "off");
+        else if (c->auto_disarm_ms % 1000 == 0)
+            snprintf(out, cap, "link silent %d s", c->auto_disarm_ms / 1000);
+        else if (c->auto_disarm_ms > 1000)
+            snprintf(out, cap, "link silent %.1f s", c->auto_disarm_ms / 1000.0);
+        else
+            snprintf(out, cap, "link silent %d ms", c->auto_disarm_ms);
+        break;
+    }
+}
+
+/* Where the rows of the LIVE INPUT panel go: roomier when the panel is tall,
+ * tighter where the banner and a second message line take height. */
+typedef struct { int idle_cy, div, caps_cy, kcy, mcy, row0, pitch, bottom; } live_metrics_t;
+
+static void live_metrics(int armed, RECT c, live_metrics_t *m)
+{
+    int lh = MulDiv(c.bottom - c.top, 96, (int)g.dpi);
+    memset(m, 0, sizeof *m);
+    if (!armed) {
+        int compact = lh < 170;
+        m->idle_cy = c.top + S(compact ? 16 : 20);
+        m->div = c.top + S(compact ? 33 : 38);
+        m->caps_cy = m->div + S(compact ? 12 : 16);
+        m->row0 = m->caps_cy + S(compact ? 16 : 21);
+        m->pitch = S(compact ? 19 : 22);
+    } else {
+        int compact = lh < 184;
+        m->kcy = c.top + S(compact ? 21 : 24);
+        m->mcy = m->kcy + S(compact ? 24 : 28);
+        m->div = m->mcy + S(compact ? 15 : 18);
+        m->row0 = m->div + S(compact ? 15 : 18);
+        m->pitch = S(compact ? 19 : 22);
+    }
+    m->bottom = m->row0 + 3 * m->pitch + S(10);
+}
+
+static void paint_control(HDC dc)
+{
+    layout_t *L = &g.L;
+    int x0 = L->body.left, cy = L->head_cy;
+
+    /* section head: CONNECTION, the encryption chip, relay status and address */
+    tracked(dc, g.f_section, W_TEXT3, x0, cy - font_h(dc, g.f_section) / 2, "CONNECTION");
+    int bx = x0 + tracked_w(dc, g.f_section, "CONNECTION") + S(10), chw;
+    if (g.key_error)
+        chw = chip(dc, bx, cy, S(18), "KEY ERROR", W_RED_F, W_RED_BD, W_RED_TX);
+    else if (g.crypto_on)
+        chw = chip(dc, bx, cy, S(18), "E2E", W_GREEN_F, W_GREEN_BD, W_GREEN_TX);
+    else
+        chw = chip(dc, bx, cy, S(18), "E2E OFF", W_FIELD, W_LINE2, W_TEXT3);
     char addr[160];
     snprintf(addr, sizeof addr, "%s:%d", g.cfg.target, g.cfg.port);
-    int cy = title_cy(L->stats);
-    int right = L->stats.right - S(14);
-    int aw = text_w(dc, g.f_mono_s, addr);
-    text_vc(dc, g.f_mono_s, C_TEXT3, right - aw, cy, addr);
-    int sepw = text_w(dc, g.f_label, "  ·  ");
-    text_vc(dc, g.f_label, C_TEXT3, right - aw - sepw, cy, "  ·  ");
-    int sw = text_w(dc, g.f_label, st);
-    int sx = right - aw - sepw - sw;
-    text_vc(dc, g.f_label, sc == C_TEXT3 ? C_TEXT2 : sc, sx, cy, st);
-    dot(dc, sx - S(9), cy, S(3), sc);
+    const char *st, *shortt;
+    int kind;
+    COLORREF col;
+    st = relay_status(&shortt, &kind, &col);
+    int right = L->body.right, aw = text_w(dc, g.f_mono_s, addr), sw = text_w(dc, g.f_label, st);
+    int room = right - (bx + chw) - S(12) - S(10) - sw - S(14); /* what the address may take */
+    if (aw > room && room > S(40))
+        aw = room;                                                 /* a long host ends in an ellipsis */
+    text_fit(dc, g.f_mono_s, W_TEXT3, right - aw, cy, right, addr);
+    int sx = right - aw - S(10) - sw;
+    text_vc(dc, g.f_label, col, sx, cy, st);
+    glyph(dc, kind, sx - S(12), cy, W_BG);
 
     /* tiles */
     char v[4][32];
@@ -2642,275 +3260,273 @@ static void paint_stats(HDC dc)
         live[1] = 1;
     } else strcpy(v[1], "—");
     if (g.armed) { snprintf(v[2], 32, "%u/s", g.pps); live[2] = 1; } else strcpy(v[2], "—");
-
-    /* TARGET PC: as the Pico sees it over USB, reported through the relay */
-    int ts = target_state();
-    COLORREF tc = C_TEXT2;
-    if (ts < 0) { strcpy(v[3], "—"); tc = C_TEXT3; }
-    else if (waking()) { strcpy(v[3], "Waking"); tc = C_AMBER; }
-    else if (ts == HIDWAY_TARGET_ON) { strcpy(v[3], "On"); tc = C_LIVE_TX; }
-    else if (ts == HIDWAY_TARGET_ASLEEP) { strcpy(v[3], "Asleep"); tc = C_AMBER; }
-    else if (ts == HIDWAY_TARGET_OFF) strcpy(v[3], "Off");
-    else strcpy(v[3], "Off?"); /* no report: Pico without power (PC off) or unplugged */
-
+    COLORREF tc;
+    snprintf(v[3], 32, "%s", target_text(&tc));
     static const char *names[4] = {"RTT", "LOSS", "RATE", "GAMING PC"};
     for (int i = 0; i < 4; i++) {
         RECT t = L->tiles[i];
         int hot = i == 3 && g.wake_hot && wake_offered();
-        round_rect(dc, t, S(8), hot ? C_SEC_H : C_TILE, hot ? C_FOCUS_BD : C_TILE);
-        tracked(dc, g.f_section, C_TEXT3, t.left + S(11), t.top + S(8), names[i]);
-        text_at(dc, g.f_tile, i == 3 ? tc : live[i] ? C_TEXT : C_TEXT3, t.left + S(11), t.top + S(23), v[i]);
+        round_rect(dc, t, S(8), hot ? W_SURF2 : W_SURF, hot ? W_FOCUS : W_LINE);
+        tracked(dc, g.f_section, W_TEXT3, t.left + S(11), t.top + S(8), names[i]);
+        text_vc(dc, g.f_tile, i == 3 ? tc : live[i] ? W_TEXT : W_TEXT3, t.left + S(11), t.top + S(38), v[i]);
     }
-    /* A click on the tile wakes the target; the chip says so. It sits on the
-     * value line at the right, below the label, clear of the longest value. */
+    /* A click on the tile wakes the target; the chip says so. */
     if (wake_offered() && !waking()) {
         RECT t = L->tiles[3];
         int cw = text_w(dc, g.f_chip, "WAKE") + 2 * S(8);
-        chip(dc, t.right - S(8) - cw, t.top + S(34), S(18), "WAKE", C_LIVE_F, C_LIVE_BD, C_LIVE_TX);
+        chip(dc, t.right - S(9) - cw, t.bottom - S(18), S(18), "WAKE", W_GREEN_F, W_GREEN_BD, W_GREEN_TX);
     }
 
-    /* Pico on this PC (indication only) and the route in use */
-    cy = L->info_cy;
-    int x = L->stats.left + S(14), fh = font_h(dc, g.f_section);
-    tracked(dc, g.f_section, C_TEXT3, x, cy - fh / 2, "PICO");
-    x += tracked_w(dc, g.f_section, "PICO") + S(10);
-    COLORREF pc;
-    const char *pt = pico_text(&pc);
-    dot(dc, x + S(3), cy, S(3), pc);
-    text_vc(dc, g.f_label, pc == C_TEXT3 ? C_TEXT2 : pc, x + S(12), cy, pt);
-    x = L->tiles[2].left;
-    tracked(dc, g.f_section, C_TEXT3, x, cy - fh / 2, "ROUTE");
-    x += tracked_w(dc, g.f_section, "ROUTE") + S(10);
-    text_vc(dc, g.f_label, C_TEXT, x, cy, route_name(g.cfg.loopback_mode));
-}
-
-static void paint_live(HDC dc)
-{
-    layout_t *L = &g.L;
-    RECT c = L->live;
-    card(dc, c, "LIVE INPUT");
-
+    /* LIVE INPUT head: the mode on the right */
+    tracked(dc, g.f_section, W_TEXT3, x0, L->live_head_cy - font_h(dc, g.f_section) / 2, "LIVE INPUT");
     const char *mode = g.cfg.relay_keyboard && g.cfg.relay_mouse ? "keyboard + mouse"
                      : g.cfg.relay_keyboard ? "keyboard only"
                      : g.cfg.relay_mouse ? "mouse only" : "nothing relayed";
-    char mode_text[80];uint32_t limited=0;
-    for(unsigned o=0;o<3;o++)for(unsigned i=0;i<5;i++)limited+=g.pulse[o][i].limited;
-    if(g.armed&&(limited||g.cfg.repeat_enabled)) {
-        snprintf(mode_text,sizeof mode_text,"%s  |  limited %lu",g.cfg.repeat_enabled?"repeat ON":"click pacing",(unsigned long)limited);
-        mode=mode_text;
+    char mode_text[80];
+    uint32_t limited = 0;
+    for (unsigned o = 0; o < 3; o++)
+        for (unsigned i = 0; i < 5; i++)
+            limited += g.pulse[o][i].limited;
+    if (g.armed && (limited || g.cfg.repeat_enabled)) {
+        snprintf(mode_text, sizeof mode_text, "%s  |  limited %lu", g.cfg.repeat_enabled ? "repeat ON" : "click pacing",
+                 (unsigned long)limited);
+        mode = mode_text;
     }
     int mw = text_w(dc, g.f_label, mode);
-    text_vc(dc, g.f_label, C_TEXT3, c.right - S(14) - mw, title_cy(c), mode);
+    text_vc(dc, g.f_label, W_TEXT3, right - mw, L->live_head_cy, mode);
 
-    /* The content sits in the middle of the card body (below the title). */
-    int mid = (c.top + S(34) + c.bottom - S(12)) / 2;
+    /* panel */
+    RECT c = L->live;
+    round_rect(dc, c, S(8), W_SURF, W_LINE);
+    live_metrics_t lm;
+    live_metrics(g.armed, c, &lm);
+    int lx = c.left + S(14), vx = c.left + S(14 + 110), pr = c.right - S(14);
+    char val[96];
     if (!g.armed) {
-        if(g.local_pico_notice[0]) {
-            RECT note={c.left+S(14),0,c.right-S(14),0};
-            WCHAR w[256];
-            to_wide(g.local_pico_notice,w,256);
-            SelectObject(dc,g.f_label);
-            RECT calc=note;
-            DrawTextW(dc,w,-1,&calc,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX|DT_CALCRECT);
-            int h=calc.bottom-calc.top;
-            note.top=mid-h/2;
-            if(note.top<c.top+S(35))note.top=c.top+S(35);
-            note.bottom=c.bottom-S(6);
-            text_in(dc,g.f_label,C_TEXT2,note,DT_CENTER|DT_WORDBREAK,g.local_pico_notice);
-            return;
-        }
+        int idle_cy = lm.idle_cy, div = lm.div, caps_cy = lm.caps_cy, row0 = lm.row0, pitch = lm.pitch;
         char hk[48], hint[96];
         hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
         snprintf(hint, sizeof hint, "Press ARM or %s to start relaying", hk);
-        RECT a = {c.left, mid - S(22), c.right, mid};
-        RECT b = {c.left, mid, c.right, mid + S(22)};
-        text_in(dc, g.f_body, C_TEXT2, a, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Input capture is off");
-        text_in(dc, g.f_label, C_TEXT3, b, DT_CENTER | DT_VCENTER | DT_SINGLELINE, hint);
+        text_vc(dc, g.f_semi, W_TEXT, lx, idle_cy, "Input capture is off");
+        int iw = text_w(dc, g.f_semi, "Input capture is off") + S(8);
+        text_fit(dc, g.f_label, W_TEXT3, lx + iw, idle_cy, pr, hint);
+        RECT dv = {c.left + S(14), div, c.right - S(14), div + (S(1) > 0 ? S(1) : 1)};
+        fill_solid(dc, dv, W_LINE);
+        tracked(dc, g.f_section, W_TEXT3, lx, caps_cy - font_h(dc, g.f_section) / 2, "ON ARM");
+        static const char *const keys[4] = {"Sending", "Sources", "Click pacing", "Auto-disarm"};
+        for (int i = 0; i < 4; i++) {
+            summary_text(i, val, sizeof val);
+            kv_row(dc, lx, vx, pr, row0 + pitch * i, keys[i], val);
+        }
         return;
     }
 
-    int lx = c.left + S(14), cx0 = c.left + S(70), maxx = c.right - S(14);
-    int ch = S(22), gap = S(6);
-
-    /* three rows around the middle: keys, mouse buttons, movement and wheel */
-    int cy = mid - S(36);
-    text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Keys");
-    int x = cx0, shown = 0, total = 0;
-    const char *names[24];
+    /* armed: the keys and mouse rows, then the same summary */
+    int kcy = lm.kcy, mcy = lm.mcy, div = lm.div, row0 = lm.row0, pitch = lm.pitch;
+    int ch = S(22), gap = S(6), cx0 = c.left + S(14 + 64), maxx = c.right - S(14);
+    text_vc(dc, g.f_label, W_TEXT3, lx, kcy, "Keys");
+    int x = cx0, shown = 0, total = 0, n = 0;
+    const char *knames[24];
     char tmp[24][8];
-    int n = 0;
     for (int i = 0; i < 8 && n < 24; i++)
         if (g.modifiers & MODS[i].bit)
-            names[n++] = MODS[i].name;
+            knames[n++] = MODS[i].name;
     for (unsigned u = HIDWAY_KEY_USAGE_MIN; u <= HIDWAY_KEY_USAGE_MAX && n < 24; u++)
         if (hidway_bitmap_test(g.keys, (uint8_t)u)) {
-            names[n] = hidway_usage_name((uint8_t)u, tmp[n]);
+            knames[n] = hidway_usage_name((uint8_t)u, tmp[n]);
             n++;
         }
     total = n;
     for (int i = 0; i < n; i++) {
-        int w = text_w(dc, g.f_chip, names[i]) + 2 * S(8);
+        int w = text_w(dc, g.f_chip, knames[i]) + 2 * S(8);
         if (w < ch) w = ch;
         if (x + w > maxx - S(40) && i < n - 1)
             break;
-        x += chip(dc, x, cy, ch, names[i], C_CHIP, C_CHIP_BD, C_TEXT) + gap;
+        x += chip(dc, x, kcy, ch, knames[i], W_KEY, W_KEY_BD, W_TEXT) + gap;
         shown++;
     }
     if (shown < total) {
         char more[8];
         snprintf(more, sizeof more, "+%d", total - shown);
-        chip(dc, x, cy, ch, more, C_FIELD, C_FIELD_BD, C_TEXT2);
+        chip(dc, x, kcy, ch, more, W_FIELD, W_LINE2, W_TEXT2);
     }
     if (total == 0)
-        text_vc(dc, g.f_label, C_TEXT3, cx0, cy, "none held");
+        text_vc(dc, g.f_label, W_TEXT3, cx0, kcy, "none held");
 
-    /* mouse buttons row */
-    cy = mid;
-    text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Mouse");
+    text_vc(dc, g.f_label, W_TEXT3, lx, mcy, "Mouse");
     static const struct { uint8_t bit; const char *name; } BTNS[] = {
         {BTN_L, "Left"}, {BTN_R, "Right"}, {BTN_M, "Middle"}, {BTN_X1, "Back"}, {BTN_X2, "Fwd"}};
     x = cx0;
     for (int i = 0; i < 5; i++)
         if (g.buttons & BTNS[i].bit)
-            x += chip(dc, x, cy, ch, BTNS[i].name, C_CHIP, C_CHIP_BD, C_TEXT) + gap;
-    if (x == cx0)
-        text_vc(dc, g.f_label, C_TEXT3, cx0, cy, "none held");
-
-    /* movement and wheel row */
-    cy = mid + S(36);
-    text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Motion");
+            x += chip(dc, x, mcy, ch, BTNS[i].name, W_KEY, W_KEY_BD, W_TEXT) + gap;
     char mv[64];
     snprintf(mv, sizeof mv, "dx %+ld   dy %+ld   wheel %+d", (long)g.show_dx, (long)g.show_dy, g.show_dw);
-    text_vc(dc, g.f_mono, C_TEXT2, cx0, cy, mv);
+    text_vc(dc, g.f_mono, W_TEXT2, x, mcy, mv);
+
+    RECT dv = {c.left + S(14), div, c.right - S(14), div + (S(1) > 0 ? S(1) : 1)};
+    fill_solid(dc, dv, W_LINE);
+    static const char *const keys[4] = {"Sending", "Sources", "Click pacing", "Auto-disarm"};
+    for (int i = 0; i < 4; i++) {
+        summary_text(i, val, sizeof val);
+        kv_row(dc, lx, vx, pr, row0 + pitch * i, keys[i], val);
+    }
 }
+
+/* ---- Connection ---------------------------------------------------------- */
 
 /* A painted field frame around a borderless edit. */
 static void field_frame(HDC dc, RECT f, int id, int enabled)
 {
-    round_rect(dc, f, S(7), C_FIELD, enabled && g.focus_id == id ? C_FOCUS_BD : C_FIELD_BD);
+    round_rect(dc, f, S(6), W_FIELD, enabled && g.focus_id == id ? W_FOCUS : enabled ? W_LINE2 : W_LINE);
+}
+
+/* A caps group head with an optional muted remark after it. */
+static void group_head(HDC dc, int x, int cy, const char *caps, const char *note)
+{
+    tracked(dc, g.f_section, W_TEXT3, x, cy - font_h(dc, g.f_section) / 2, caps);
+    if (note)
+        text_vc(dc, g.f_label, W_TEXT3, x + tracked_w(dc, g.f_section, caps) + S(10), cy, note);
 }
 
 static void paint_connection(HDC dc)
 {
     layout_t *L = &g.L;
-    card(dc, L->settings, "RELAY");
-    char route[64];
-    snprintf(route, sizeof route, "%s route", route_name(g.cfg.loopback_mode));
-    int tx = L->settings.left + S(14) + tracked_w(dc, g.f_section, "RELAY") + S(10);
-    chip(dc, tx, title_cy(L->settings), S(18), route, C_FIELD, C_FIELD_BD, C_TEXT2);
+    int x0 = L->body.left;
+    char head[48];
+    snprintf(head, sizeof head, "%s route", route_name(g.cfg.loopback_mode));
+    for (char *p = head; *p; p++)
+        *p = (char)toupper((unsigned char)*p);
+    group_head(dc, x0, L->conn_head_cy[0], head, "saved separately for each route");
+    group_head(dc, x0, L->conn_head_cy[1], "BOTH ROUTES", NULL);
+    group_head(dc, x0, L->conn_head_cy[2], "CURRENT LINK", NULL);
 
-    static const char *labels[4] = {"Relay address", "Port", "Rate (Hz)", "Disarm (ms)"};
+    static const char *labels[4] = {"Relay address", "Port", "Send rate (Hz)", "Auto-disarm (ms)"};
     for (int i = 0; i < 4; i++) {
-        text_at(dc, g.f_label, C_TEXT2, L->frame[i].left + S(2), L->label_y, labels[i]);
+        text_vc(dc, g.f_label, W_TEXT2, L->frame[i].left + S(1), L->conn_lbl_cy[i / 2], labels[i]);
         field_frame(dc, L->frame[i], ID_TARGET + i, 1);
+        if (g.conn_error && g.conn_status[0] && g.conn_bad == i + 1) /* the field a refused Save named */
+            round_rect(dc, L->frame[i], S(6), W_FIELD, W_RED);
     }
-    if (g.conn_status[0]) { /* a refused or failed Save, in place of the hint */
-        text_in(dc, g.f_label, g.conn_error ? C_WARN : C_TEXT2, L->conn_hint, DT_LEFT | DT_WORDBREAK,
-                g.conn_status);
-        return;
-    }
-    char hint[200];
-    snprintf(hint, sizeof hint,
-             "Relay address and port belong to the %s route; rate and disarm are shared "
-             "by both routes. Save disarms first.", route_name(g.cfg.loopback_mode));
-    text_in(dc, g.f_label, C_TEXT3, L->conn_hint, DT_LEFT | DT_WORDBREAK, hint);
+    text_fit(dc, g.f_label, W_TEXT3, x0, L->conn_hint_cy, L->body.right,
+             "Save disarms first. A wrong value is refused and nothing changes.");
+
+    /* Current link: relay, encryption, Pi to Pico */
+    const char *shortt, *st;
+    int kind;
+    COLORREF col;
+    st = relay_status(&shortt, &kind, &col);
+    int vx = x0 + S(110), pitch = S(20), right = L->body.right;
+    char val[96];
+    text_vc(dc, g.f_fact, W_TEXT3, x0, L->link_cy, "Relay");
+    glyph(dc, kind, vx + S(5), L->link_cy, W_BG);
+    if ((g.armed && g.status_seen) || (!g.armed && link_recent()))
+        snprintf(val, sizeof val, "%s, RTT %d ms", st, g.rtt_ms);
+    else
+        snprintf(val, sizeof val, "%s", st);
+    text_fit(dc, g.f_fact, col, vx + S(17), L->link_cy, right, val);
+    kv_row(dc, x0, vx, right, L->link_cy + pitch, "Encryption",
+           g.key_error ? "KEY ERROR: invalid key in hidway.ini" : g.crypto_on ? "E2E on (key in hidway.ini)" : "E2E off");
+    kv_row(dc, x0, vx, right, L->link_cy + 2 * pitch, "Pi to Pico",
+           ((g.armed && g.status_seen) || (!g.armed && link_recent()))
+               ? ((g.pi_flags & HIDWAY_STATUS_SERIAL_OPEN) ? "serial open" : "no serial") : "unknown");
 }
+
+/* ---- Input --------------------------------------------------------------- */
 
 static void paint_input(HDC dc)
 {
     layout_t *L = &g.L;
-    const int XL = L->input.left + S(14), sub = XL + S(16);
-    int loop = g.cfg.loopback_mode != 0, rep = g.pending.repeat_enabled != 0;
-    card(dc, L->input, "INPUT");
-    if (g.input_dirty) {
-        int tx = XL + tracked_w(dc, g.f_section, "INPUT") + S(10);
-        text_vc(dc, g.f_label, C_AMBER, tx, title_cy(L->input), "not applied");
-    }
+    int x0 = L->body.left, loop = g.cfg.loopback_mode != 0, rep = g.pending.repeat_enabled != 0;
 
-    struct { const char *text; int x, cy, on; } labels[] = {
-        {"Send input to", XL, L->row_route, 1},
-        {"Relay", XL, L->row_relay, 1},
-        {"Sources", XL, L->row_sources, 1},
-        {"Gaming PC pointer", XL, L->row_pointer, loop},
-        {"Button", sub, L->row_button, rep},
-        {"Repeat clicks/sec", L->repeat_button.right + S(16), L->row_button, rep},
-        {"Repeat source", sub, L->row_source, rep && !loop},
-        {"Virtual clicks/sec", XL, L->row_click, 1},
-    };
-    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++)
-        text_vc(dc, g.f_label, labels[i].on ? C_TEXT2 : C_TEXT3, labels[i].x, labels[i].cy, labels[i].text);
-    text_vc(dc, g.f_label, C_TEXT3, L->click_cps.right + S(10), L->row_click, "1-25 per button");
+    /* left column */
+    text_vc(dc, g.f_label, W_TEXT2, x0, L->in_route_cy, "Send input to");
+    round_rect(dc, L->seg, S(7), W_FIELD, W_LINE2);
+    char desc[160];
+    if (loop)
+        snprintf(desc, sizeof desc, "The Pico is plugged into this PC.");
+    else
+        snprintf(desc, sizeof desc, "Through the relay at %s.", g.cfg.target);
+    text_fit(dc, g.f_sub, W_TEXT3, x0, L->in_desc_cy, x0 + S(254), desc);
+    text_vc(dc, g.f_label, W_TEXT2, x0, L->in_relay_cy, "Relay");
+    text_vc(dc, g.f_label, W_TEXT2, x0, L->in_src_cy, "Sources");
+    if (L->note_shown) { /* Gaming PC with Physical ticked: say what it does */
+        glyph(dc, G_TRI_AMBER, L->note.left - S(10), L->note.top + S(7), W_BG);
+        text_wrap(dc, g.f_sub, W_WARN_LINE, L->note, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
+                  "Experimental: keys, buttons and wheel of this PC go through the Pico.");
+    }
+    text_vc(dc, g.f_label, loop ? W_TEXT2 : W_TEXT3, x0, L->in_ptr_cy, "Gaming PC pointer");
+
+    /* the rule and the right column */
+    fill_solid(dc, L->vr, W_LINE);
+    int x2 = L->repeat.left;
+    tracked(dc, g.f_section, W_TEXT3, x2, L->in_cap_cy - font_h(dc, g.f_section) / 2, "CLICK PACING");
+    COLORREF rc = rep ? W_TEXT2 : W_TEXT3;
+    text_vc(dc, g.f_label, rc, x2, L->in_btn_cy, "Button");
+    {
+        const char *s = "Repeat clicks/sec";
+        text_vc(dc, g.f_label, rc, L->in_cps_right - text_w(dc, g.f_label, s), L->in_btn_cy, s);
+    }
     field_frame(dc, L->repeat_cps, ID_REPEAT_CPS, rep);
+    text_vc(dc, g.f_label, rep && !loop ? W_TEXT2 : W_TEXT3, x2, L->in_rsrc_cy, "Repeat source");
+    text_vc(dc, g.f_label, W_TEXT2, x2, L->in_click_cy, "Virtual clicks/sec");
     field_frame(dc, L->click_cps, ID_CLICK_CPS, 1);
-
-    int through_pico = loop && g.pending.loopback_physical;
-    if (through_pico) { /* Gaming PC with Physical ticked: say what it does, in one line */
-        RECT note = {XL, L->row_limited - S(10), L->input.right - S(14), L->row_limited + S(10)};
-        text_in(dc, g.f_label, C_AMBER, note, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                "Experimental: keys, buttons and wheel of this PC go through the Pico.");
-    } else {
-        char limited[96];
-        snprintf(limited, sizeof limited, "Last ARM: %lu extra click attempts limited", (unsigned long)g.last_limited);
-        text_vc(dc, g.f_label, C_TEXT3, XL, L->row_limited, limited);
-    }
-
-    const char *status = g.input_status;
-    if (!status[0])
-        status = g.input_dirty ? (through_pico ? "Changes not applied yet. Programs that read Raw Input still see "
-                                                 "this PC's own keyboard and mouse too."
-                                               : "Changes not applied yet. Apply and save disarms first, then saves.")
-               : through_pico ? "Programs that read Raw Input still see this PC's own keyboard and mouse too. "
-                                "The pointer stays native. Apply and save disarms first."
-               : loop ? "Gaming PC: virtual input only; Physical and Touchpad stay local. Apply and "
-                        "save disarms first; changes not applied are dropped when you leave this tab."
-                      : "Apply and save disarms first; changes not applied are dropped when you leave "
-                        "this tab. Hold to repeat replaces dragging for its button.";
-    text_in(dc, g.f_label, g.input_error ? C_WARN : C_TEXT3, L->status, DT_LEFT | DT_WORDBREAK, status);
+    text_vc(dc, g.f_label, W_TEXT3, L->click_cps.right + S(8), (L->click_cps.top + L->click_cps.bottom) / 2,
+            "1-25 per button");
+    char limited[96];
+    snprintf(limited, sizeof limited, "Last ARM: %lu extra click attempts limited", (unsigned long)g.last_limited);
+    text_wrap(dc, g.f_sub, W_TEXT3, L->limited, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS, limited);
 }
+
+/* ---- Tools --------------------------------------------------------------- */
 
 static void paint_tools(HDC dc)
 {
     layout_t *L = &g.L;
-    card(dc, L->tools, "TOOLS");
+    int x = L->body.left, cy = L->hk_cy, ch = S(20), gap = S(5);
 
-    /* hotkeys as keycaps */
-    int x = L->tools.left + S(14), cy = L->hk_cy, ch = S(20), gap = S(4);
-    if (!g.toggle_hk_ok) {
-        char hk[48], msg[128];
-        hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
-        snprintf(msg, sizeof msg, "Toggle hotkey %s is in use — set toggle_hotkey in hidway.ini", hk);
-        text_vc(dc, g.f_label, C_WARN, x, cy, msg);
-    } else {
-        const char *groups[2] = {g.cfg.toggle.text, g.cfg.panic.text};
-        const char *gl[2] = {"Toggle", "Panic"};
-        for (int k = 0; k < 2; k++) {
-            text_vc(dc, g.f_label, C_TEXT3, x, cy, gl[k]);
-            x += text_w(dc, g.f_label, gl[k]) + S(8);
-            char tok[6][12];
-            int n = hotkey_tokens(groups[k], tok);
-            for (int i = 0; i < n; i++)
-                x += chip(dc, x, cy, ch, tok[i], C_CHIP, C_CHIP_BD, C_TEXT2) + gap;
-            x += S(18);
+    /* hotkeys as keycaps; a toggle hotkey that is in use is dimmed (the
+     * message strip says why) */
+    const char *groups[2] = {g.cfg.toggle.text, g.cfg.panic.text};
+    const char *gl[2] = {"Toggle", "Panic"};
+    for (int k = 0; k < 2; k++) {
+        int dim = k == 0 && !g.toggle_hk_ok;
+        text_vc(dc, g.f_label, dim ? W_AMBER : W_TEXT3, x, cy, gl[k]);
+        x += (k == 0 ? S(46) : S(42));
+        char tok[6][12];
+        int n = hotkey_tokens(groups[k], tok);
+        for (int i = 0; i < n; i++) {
+            int cw = text_w(dc, g.f_chip, tok[i]) + 2 * S(8);
+            if (x + cw > L->body.right - S(24)) { /* does not fit: say so */
+                chip(dc, x, cy, ch, "...", W_FIELD, W_LINE, W_TEXT3);
+                break;
+            }
+            x += chip(dc, x, cy, ch, tok[i], dim ? W_FIELD : W_KEY, dim ? W_LINE : W_KEY_BD,
+                      dim ? W_TEXT3 : W_TEXT2) + gap;
         }
+        x += S(13);
     }
 
-    card(dc, L->recent, "RECENT INPUT");
-    int tw = tracked_w(dc, g.f_section, "RECENT INPUT");
-    text_vc(dc, g.f_label, C_TEXT3, L->recent.left + S(14) + tw + S(10), title_cy(L->recent), "memory only");
-    round_rect(dc, L->list, S(7), C_FIELD, C_FIELD_BD);
+    tracked(dc, g.f_section, W_TEXT3, L->body.left, L->rh_cy - font_h(dc, g.f_section) / 2, "RECENT INPUT");
+    text_vc(dc, g.f_label, W_TEXT3, L->body.left + tracked_w(dc, g.f_section, "RECENT INPUT") + S(10), L->rh_cy,
+            "memory only");
+    round_rect(dc, L->list, S(6), W_FIELD, W_LINE2);
 }
 
 /* The whole client area except the child controls, into `dc`. */
 static void paint_content(HDC dc, RECT cr)
 {
-    fill_solid(dc, cr, C_BG);
-    paint_header(dc);
+    fill_solid(dc, cr, W_BG);
+    paint_rail(dc);
+    if (banner_visible())
+        paint_banner(dc);
     switch (g.tab) {
-    case TAB_CONTROL: paint_stats(dc); paint_live(dc); break;
+    case TAB_CONTROL: paint_control(dc); break;
     case TAB_CONNECTION: paint_connection(dc); break;
     case TAB_INPUT: paint_input(dc); break;
     default: paint_tools(dc); break;
     }
+    paint_msg(dc);
 }
 
 static void paint(HWND hwnd)
@@ -2939,8 +3555,28 @@ static void paint(HWND hwnd)
 
 /* A custom child control: one tab stop; Left/Right/Home/End (and Ctrl+Tab
  * while it has the focus) pick a tab. It reports a choice to the main window
- * as WM_COMMAND ID_TAB_CONTROL + index, the same command the tests post. */
+ * as WM_COMMAND ID_TAB_CONTROL + index, the same command the tests post.
+ * Underline tabs: 12 px in from the left, 12 px padding each side of a name,
+ * 4 px between tabs; the selected one has a 2 px underline; the Input tab
+ * carries an amber dot while there are edits that are not applied. */
 static int tab_hot = -1;
+
+/* The rectangle of each tab and the centre of the Input tab's dot. */
+static void tabs_layout(HDC dc, RECT rc[TAB_COUNT], POINT *dotp)
+{
+    int x = S(12);
+    for (int i = 0; i < TAB_COUNT; i++) {
+        int tw = text_w(dc, g.f_tab, TAB_NAMES[i]);
+        int extra = i == TAB_INPUT && g.input_dirty ? S(12) : 0;
+        RECT r = {x, 0, x + tw + S(24) + extra, S(43)};
+        rc[i] = r;
+        if (i == TAB_INPUT) {
+            dotp->x = x + S(12) + tw + S(6) + S(3);
+            dotp->y = S(22);
+        }
+        x = r.right + S(4);
+    }
+}
 
 static void tabs_pick(HWND h, int t)
 {
@@ -2950,12 +3586,15 @@ static void tabs_pick(HWND h, int t)
 
 static int tabs_hit(HWND h, int x)
 {
-    RECT r;
-    GetClientRect(h, &r);
-    if (r.right <= 0)
-        return -1;
-    int t = x * TAB_COUNT / r.right;
-    return t < 0 ? 0 : t >= TAB_COUNT ? TAB_COUNT - 1 : t;
+    HDC dc = GetDC(h);
+    RECT rc[TAB_COUNT];
+    POINT dotp;
+    tabs_layout(dc, rc, &dotp);
+    ReleaseDC(h, dc);
+    for (int i = 0; i < TAB_COUNT; i++)
+        if (x >= rc[i].left - S(2) && x < rc[i].right + S(2))
+            return i;
+    return -1;
 }
 
 static void paint_tabs(HWND h, HDC wdc)
@@ -2967,17 +3606,28 @@ static void paint_tabs(HWND h, HDC wdc)
     HDC dc = CreateCompatibleDC(wdc);
     HBITMAP bm = CreateCompatibleBitmap(wdc, r.right, r.bottom);
     HGDIOBJ ob = SelectObject(dc, bm);
-    fill_solid(dc, r, C_BG);
-    round_rect(dc, r, S(9), C_CARD, C_CARD_BD);
+    fill_solid(dc, r, W_BG);
+    RECT line = {0, r.bottom - (S(1) > 0 ? S(1) : 1), r.right, r.bottom};
+    fill_solid(dc, line, W_LINE);
     int focus = GetFocus() == h && !(SendMessageA(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+    RECT rc[TAB_COUNT];
+    POINT dotp = {0, 0};
+    tabs_layout(dc, rc, &dotp);
     for (int i = 0; i < TAB_COUNT; i++) {
-        RECT t = {r.right * i / TAB_COUNT + S(3), S(3), r.right * (i + 1) / TAB_COUNT - S(3), r.bottom - S(3)};
-        if (i == g.tab)
-            round_rect(dc, t, S(7), C_SEC_H, focus ? C_FOCUS_BD : C_SEC_BD);
-        else if (i == tab_hot)
-            round_rect(dc, t, S(7), C_SEC, C_SEC);
-        text_in(dc, g.f_btn, i == g.tab ? C_WHITE : i == tab_hot ? C_TEXT : C_TEXT2, t,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE, TAB_NAMES[i]);
+        RECT t = rc[i];
+        if (i == g.tab && focus) {
+            RECT fr = {t.left, S(6), t.right, t.bottom - S(4)};
+            round_rect(dc, fr, S(5), W_BG, W_FOCUS);
+        }
+        RECT tr = {t.left + S(12), 0, t.right - S(12), t.bottom};
+        text_in(dc, g.f_tab, i == g.tab ? W_TEXT : i == tab_hot ? W_TEXT : W_TEXT2, tr,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE, TAB_NAMES[i]);
+        if (i == TAB_INPUT && g.input_dirty)
+            dot(dc, dotp.x, dotp.y, S(3), W_AMBER);
+        if (i == g.tab) {
+            RECT ul = {t.left + S(10), r.bottom - S(2), t.right - S(10), r.bottom};
+            round_rect(dc, ul, S(1), W_TEXT, W_TEXT);
+        }
     }
     BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
@@ -3069,6 +3719,14 @@ static int cb_checked(int id)
     return g.pending.source_virtual;
 }
 
+/* The two-line tool buttons of the Tools tab: a title and what it does. */
+static const char *tool_subtitle(int id, const char *label)
+{
+    if (id == ID_MONITOR) return "devices and events";
+    if (id == ID_REPLAY) return strcmp(label, "Stop") ? "play a recording" : "stop playback";
+    return "check for updates";
+}
+
 static void draw_button(const DRAWITEMSTRUCT *d)
 {
     RECT r = d->rcItem;
@@ -3081,11 +3739,15 @@ static void draw_button(const DRAWITEMSTRUCT *d)
     bool hot = GetPropA(d->hwndItem, "hot") != NULL;
     bool down = (d->itemState & ODS_SELECTED) != 0;
     bool focus = (d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT);
+    bool off = (d->itemState & ODS_DISABLED) != 0;
 
-    /* paint what is behind the control first: no default-grey corners. Only
-     * the action row sits on the window background; the rest is on cards. */
-    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_LOCAL_PICO || id == ID_UPDATE_NOW ||
-                        id == ID_UPDATE_LATER) ? C_BG : C_CARD);
+    /* paint what is behind the control first: no default-grey corners. The
+     * rail buttons sit on the rail, the banner buttons on the blue bar, the
+     * route selector inside its field frame, everything else on the pane. */
+    COLORREF behind = (id == ID_ARM || id == ID_PANIC || id == ID_LOCAL_PICO) ? W_RAIL
+                    : (id == ID_UPDATE_NOW || id == ID_UPDATE_LATER) ? W_UPD
+                    : (id == ID_PROFILE_REMOTE || id == ID_PROFILE_GAMING) ? W_FIELD : W_BG;
+    fill_solid(dc, lr, behind);
 
     char label[32];
     GetWindowTextA(d->hwndItem, label, sizeof label);
@@ -3094,103 +3756,142 @@ static void draw_button(const DRAWITEMSTRUCT *d)
         int on = cb_checked(id);
         int box = S(16);
         RECT b = {S(1), (h - box) / 2, S(1) + box, (h - box) / 2 + box};
-        if (on) {
-            round_rect(dc, b, S(4), hot ? C_WHITE : C_TEXT, hot ? C_WHITE : C_TEXT);
-            check_mark(dc, b, C_BG);
+        COLORREF fill, bd;
+        if (off) {
+            fill = on ? W_BX_DIS_ON : W_SURF;
+            bd = on ? W_BX_DIS_ON : W_BX_DIS_BD;
+        } else if (on) {
+            fill = bd = hot ? C_WHITE : W_CHECK;
         } else {
-            round_rect(dc, b, S(4), hot ? C_SEC_H : C_FIELD, hot ? C_FOCUS_BD : C_FIELD_BD);
+            fill = hot ? W_SURF2 : W_FIELD;
+            bd = hot ? W_FOCUS : W_BX_BD;
         }
-        text_vc(dc, g.f_body, (d->itemState&ODS_DISABLED)?C_TEXT3:hot?C_WHITE:C_TEXT,
-                b.right + S(8), h / 2, label);
+        round_rect(dc, b, S(4), fill, bd);
+        if (on)
+            check_mark(dc, b, W_BG);
+        text_vc(dc, g.f_body, off ? W_TEXT3 : hot ? W_TEXT : W_TEXT, b.right + S(8), h / 2, label);
         if (focus) {
             RECT fr = b;
             InflateRect(&fr, S(2), S(2));
-            round_rect(dc, fr, S(5), C_FOCUS_BD, C_FOCUS_BD);
-            InflateRect(&fr, -S(2), -S(2));
-            if (on) {
-                round_rect(dc, b, S(4), C_TEXT, C_TEXT);
-                check_mark(dc, b, C_BG);
-            } else {
-                round_rect(dc, b, S(4), C_FIELD, C_FIELD_BD);
-            }
-        }
-    } else {
-        COLORREF fill, bd, tx;
-        HFONT f = g.f_btn;
-        int rad = S(7);
-        if (id == ID_ARM) {
-            if (d->itemState & ODS_DISABLED) {
-                fill = C_SEC;
-                bd = C_SEC_BD;
-                tx = C_TEXT3;
-            } else if (!g.armed) { /* the primary action while disarmed */
-                fill = down ? C_ARM_P : hot ? C_ARM_H : C_ARM;
-                bd = hot ? C_ARM_BD_H : C_ARM_BD;
-                tx = hot ? C_WHITE : C_ARM_TX;
-            } else {
-                fill = down ? C_BTN_P : hot ? C_BTN_H : C_BTN;
-                bd = fill;
-                tx = C_WHITE;
-            }
-            f = g.f_btn_big;
-            rad = S(10);
-            strcpy(label, g.armed ? "DISARM" : "ARM");
-        } else if (id == ID_PANIC) {
-            fill = down ? C_DNG_P : hot ? C_DNG_H : C_DNG;
-            bd = hot ? C_DNG_BD_H : C_DNG_BD;
-            tx = hot ? RGB(255, 186, 178) : C_DNG_TX;
-            f = g.f_btn_big;
-            rad = S(10);
-        } else if (id == ID_UPDATE_NOW || id == ID_UPDATE_LATER) {
-            /* update banner: small header buttons, unlike the action row */
-            int primary = id == ID_UPDATE_NOW;
-            fill = down ? C_SEC : hot ? C_SEC_H : primary ? C_CHIP : C_BG;
-            bd = hot ? C_FOCUS_BD : primary ? C_CHIP_BD : C_SEC_BD;
-            tx = hot ? C_WHITE : primary ? C_TEXT : C_TEXT2;
-            f = g.f_chip;
-            rad = S(5);
-        } else if (id == ID_PROFILE_REMOTE || id == ID_PROFILE_GAMING) {
-            /* two-way route selector: the route in use is lit, with a dot */
-            int on = (id == ID_PROFILE_GAMING) == (g.cfg.loopback_mode != 0);
-            fill = on ? C_CHIP : down ? C_SEC : hot ? C_SEC_H : C_FIELD;
-            bd = on || hot ? C_FOCUS_BD : C_FIELD_BD;
-            tx = on || hot ? C_WHITE : C_TEXT2;
-            round_rect(dc, lr, rad, fill, bd);
-            if (focus) {
-                RECT fr = lr;
-                InflateRect(&fr, -S(3), -S(3));
-                round_rect(dc, fr, rad - S(2), C_FOCUS_BD, C_FOCUS_BD);
-                InflateRect(&fr, -S(1), -S(1));
-                round_rect(dc, fr, rad - S(3), fill, fill);
-            }
-            int tw = text_w(dc, f, label), dd = on ? S(8) + S(8) : 0;
-            int x = (w - tw - dd) / 2;
+            round_rect(dc, fr, S(5), W_FOCUS, W_FOCUS);
+            round_rect(dc, b, S(4), fill, fill == bd ? fill : bd);
             if (on)
-                dot(dc, x + S(4), h / 2, S(4), C_LIVE);
-            text_vc(dc, f, tx, x + dd, h / 2, label);
-            BitBlt(d->hDC, r.left, r.top, w, h, dc, 0, 0, SRCCOPY);
-            SelectObject(dc, ob);
-            DeleteObject(bm);
-            DeleteDC(dc);
-            return;
-        } else {
-            fill = down ? C_SEC : hot ? C_SEC_H : C_SEC;
-            bd = hot ? C_FOCUS_BD : C_SEC_BD;
-            tx = hot ? C_WHITE : C_TEXT;
-            if (id == ID_SAVE && g.saved_flash)
-                strcpy(label, "Saved ✓");
-            if(id==ID_LOCAL_PICO&&g.cfg.loopback_mode)bd=C_LIVE_BD;
-            if(d->itemState&ODS_DISABLED)tx=C_TEXT3;
+                check_mark(dc, b, W_BG);
         }
-        round_rect(dc, lr, rad, fill, bd);
+    } else if (id == ID_ARM) {
+        /* two lines: the word and the toggle hotkey */
+        COLORREF fill, bd, tx, sub;
+        if (g.armed) {
+            fill = down ? W_DIS_P : hot ? W_DIS_H : W_DIS;
+            bd = W_DIS_BD;
+            tx = W_TEXT;
+            sub = W_DIS_SUB;
+        } else {
+            fill = down ? W_ARM_P : hot ? W_ARM_H : W_ARM;
+            bd = W_ARM_BD;
+            tx = W_ARM_TX;
+            sub = W_ARM_SUB;
+        }
+        round_rect(dc, lr, S(8), fill, bd);
         if (focus) {
             RECT fr = lr;
             InflateRect(&fr, -S(3), -S(3));
-            round_rect(dc, fr, rad - S(2), C_FOCUS_BD, C_FOCUS_BD);
+            round_rect(dc, fr, S(6), W_FOCUS, W_FOCUS);
             InflateRect(&fr, -S(1), -S(1));
-            round_rect(dc, fr, rad - S(3), fill, fill);
+            round_rect(dc, fr, S(5), fill, fill);
         }
-        text_in(dc, f, tx, lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE, label);
+        char hk[48];
+        hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
+        int a = font_h(dc, g.f_btn_big), b = font_h(dc, g.f_arm_sub), top = (h - (a + b)) / 2;
+        SetTextCharacterExtra(dc, S(1) * 6 / 10);
+        RECT t1 = {0, top, w, top + a};
+        text_in(dc, g.f_btn_big, tx, t1, DT_CENTER | DT_VCENTER | DT_SINGLELINE, g.armed ? "DISARM" : "ARM");
+        SetTextCharacterExtra(dc, 0);
+        RECT t2 = {0, top + a, w, top + a + b};
+        text_in(dc, g.f_arm_sub, sub, t2, DT_CENTER | DT_VCENTER | DT_SINGLELINE, hk);
+    } else if (id == ID_PANIC) {
+        COLORREF fill = down ? W_RED_FP : hot ? W_RED_FH : W_RED_F;
+        round_rect(dc, lr, S(8), fill, hot ? W_RED_BDH : W_RED_BD);
+        if (focus) {
+            RECT fr = lr;
+            InflateRect(&fr, -S(3), -S(3));
+            round_rect(dc, fr, S(6), W_FOCUS, W_FOCUS);
+            InflateRect(&fr, -S(1), -S(1));
+            round_rect(dc, fr, S(5), fill, fill);
+        }
+        SetTextCharacterExtra(dc, S(1) * 11 / 10);
+        int tw = text_w(dc, g.f_panic, "PANIC"), gw = S(14), gap = S(9);
+        int x = (w - (gw + gap + tw)) / 2;
+        glyph(dc, G_OCT, x + gw / 2, h / 2, fill);
+        text_vc(dc, g.f_panic, hot ? RGB(255, 186, 178) : W_RED_TX, x + gw + gap, h / 2, label);
+        SetTextCharacterExtra(dc, 0);
+    } else if (id == ID_MONITOR || id == ID_REPLAY || id == ID_UPDATES) {
+        COLORREF fill = down ? W_SURF : W_SURF2;
+        round_rect(dc, lr, S(8), fill, hot ? W_FOCUS : W_LINE2);
+        if (focus) {
+            RECT fr = lr;
+            InflateRect(&fr, -S(3), -S(3));
+            round_rect(dc, fr, S(6), W_FOCUS, W_FOCUS);
+            InflateRect(&fr, -S(1), -S(1));
+            round_rect(dc, fr, S(5), fill, fill);
+        }
+        int a = font_h(dc, g.f_semi), b = font_h(dc, g.f_sub), top = (h - (a + b)) / 2;
+        text_vc(dc, g.f_semi, W_TEXT, S(11), top + a / 2, label);
+        text_vc(dc, g.f_sub, W_TEXT3, S(11), top + a + b / 2, tool_subtitle(id, label));
+    } else if (id == ID_UPDATE_NOW || id == ID_UPDATE_LATER) {
+        /* update banner: small buttons on the blue bar; Later has no frame */
+        int primary = id == ID_UPDATE_NOW;
+        COLORREF fill = primary ? (down ? W_UPD : hot ? W_UPD_BTN_BD : W_UPD_BTN) : behind;
+        COLORREF bd = primary ? W_UPD_BTN_BD : (hot ? W_UPD_ICO : behind);
+        round_rect(dc, lr, S(5), fill, bd);
+        if (focus) {
+            RECT fr = lr;
+            InflateRect(&fr, -S(3), -S(3));
+            round_rect(dc, fr, S(3), W_FOCUS, W_FOCUS);
+            InflateRect(&fr, -S(1), -S(1));
+            round_rect(dc, fr, S(2), fill, fill);
+        }
+        text_in(dc, g.f_chip, W_UPD_TX, lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE, label);
+    } else if (id == ID_PROFILE_REMOTE || id == ID_PROFILE_GAMING) {
+        /* two-way route selector in its field frame: the route in use is lit
+         * with a filled radio dot */
+        int on = (id == ID_PROFILE_GAMING) == (g.cfg.loopback_mode != 0);
+        COLORREF fill = on ? W_SEG_ON : behind;
+        if (!on && hot)
+            fill = W_SURF2;
+        round_rect(dc, lr, S(5), fill, fill);
+        if (focus) {
+            RECT fr = lr;
+            round_rect(dc, fr, S(5), W_FOCUS, W_FOCUS);
+            InflateRect(&fr, -S(1), -S(1));
+            round_rect(dc, fr, S(4), fill, fill);
+        }
+        int tw = text_w(dc, g.f_btn, label), dd = S(8) + S(7);
+        int x = (w - tw - dd) / 2;
+        radio(dc, x + S(4), h / 2, on, on ? W_TEXT : W_TEXT2);
+        text_vc(dc, g.f_btn, on || hot ? W_TEXT : W_TEXT2, x + dd, h / 2, label);
+    } else {
+        /* Pico on this PC, Save, Apply and save, Clear */
+        COLORREF fill = down ? W_SURF : hot ? W_SURF2 : W_SURF2;
+        COLORREF bd = hot ? W_FOCUS : W_LINE2, tx = W_TEXT;
+        if (id == ID_SAVE && g.saved_flash)
+            strcpy(label, "Saved ✓");
+        if (id == ID_LOCAL_PICO && g.cfg.loopback_mode)
+            bd = W_GREEN_BD;
+        if (off) {
+            fill = W_SURF;
+            bd = W_LINE;
+            tx = W_TEXT3;
+        }
+        round_rect(dc, lr, S(6), fill, bd);
+        if (focus) {
+            RECT fr = lr;
+            InflateRect(&fr, -S(3), -S(3));
+            round_rect(dc, fr, S(4), W_FOCUS, W_FOCUS);
+            InflateRect(&fr, -S(1), -S(1));
+            round_rect(dc, fr, S(3), fill, fill);
+        }
+        text_in(dc, g.f_btn, tx, lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE, label);
     }
 
     BitBlt(d->hDC, r.left, r.top, w, h, dc, 0, 0, SRCCOPY);
@@ -3204,7 +3905,7 @@ static void draw_history_item(const DRAWITEMSTRUCT *d)
     if (d->itemID == (UINT)-1)
         return;
     RECT r = d->rcItem;
-    fill_solid(d->hDC, r, C_FIELD);
+    fill_solid(d->hDC, r, W_FIELD);
 
     char buf[160];
     if (SendMessageA(d->hwndItem, LB_GETTEXT, d->itemID, (LPARAM)buf) == LB_ERR)
@@ -3219,20 +3920,20 @@ static void draw_history_item(const DRAWITEMSTRUCT *d)
     char k = kind ? kind[0] : 'i';
 
     int cy = (r.top + r.bottom) / 2;
-    text_vc(d->hDC, g.f_mono_s, C_TEXT3, r.left + S(10), cy, t);
+    text_vc(d->hDC, g.f_mono_s, W_TEXT3, r.left + S(10), cy, t);
     int ax = r.left + S(112), lx = r.left + S(132);
     if (k == 'd') {
-        text_vc(d->hDC, g.f_body, C_TEXT, ax, cy, "↓");
-        text_vc(d->hDC, g.f_body, C_TEXT, lx, cy, lab);
+        text_vc(d->hDC, g.f_body, W_TEXT, ax, cy, "↓");
+        text_vc(d->hDC, g.f_body, W_TEXT, lx, cy, lab);
     } else if (k == 'u') {
-        text_vc(d->hDC, g.f_body, C_TEXT3, ax, cy, "↑");
-        text_vc(d->hDC, g.f_body, C_TEXT2, lx, cy, lab);
+        text_vc(d->hDC, g.f_body, W_TEXT3, ax, cy, "↑");
+        text_vc(d->hDC, g.f_body, W_TEXT2, lx, cy, lab);
     } else if (k == 'w') {
-        dot(d->hDC, ax + S(4), cy, S(3), C_WARN);
-        text_vc(d->hDC, g.f_body, C_WARN, lx, cy, lab);
+        dot(d->hDC, ax + S(4), cy, S(3), W_RED);
+        text_vc(d->hDC, g.f_body, W_RED_TX, lx, cy, lab);
     } else {
-        dot(d->hDC, ax + S(4), cy, S(3), C_TEXT3);
-        text_vc(d->hDC, g.f_body, C_TEXT2, lx, cy, lab);
+        dot(d->hDC, ax + S(4), cy, S(3), W_TEXT3);
+        text_vc(d->hDC, g.f_body, W_TEXT2, lx, cy, lab);
     }
 }
 
@@ -3283,8 +3984,8 @@ static LRESULT CALLBACK list_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         HDC dc = msg == WM_PAINT ? BeginPaint(h, &ps) : (HDC)wp;
         RECT r;
         GetClientRect(h, &r);
-        fill_solid(dc, r, C_FIELD);
-        text_in(dc, g.f_label, C_TEXT3, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        fill_solid(dc, r, W_FIELD);
+        text_in(dc, g.f_label, W_TEXT3, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
                 g.cfg.history_enabled ? "No input yet — arm to start relaying" : "Key history is turned off");
         if (msg == WM_PAINT)
             EndPaint(h, &ps);
@@ -3331,6 +4032,10 @@ static void connection_status(const char *text, int error)
 {
     snprintf(g.conn_status, sizeof g.conn_status, "%s", text ? text : "");
     g.conn_error = error;
+    if (!g.conn_status[0])
+        g.conn_bad = 0;
+    else
+        msg_touch(MSRC_CONN);
     invalidate_fields();
 }
 
@@ -3361,18 +4066,22 @@ static int apply_settings(void)
         t++;
     if (!*t) {
         connection_status("Settings not saved: enter the relay address.", 1);
+        g.conn_bad = 1;
         return 0;
     }
     if (!field_int(g.edit[1], 1, 65535, &port)) {
         connection_status("Settings not saved: port must be 1 to 65535.", 1);
+        g.conn_bad = 2;
         return 0;
     }
     if (!field_int(g.edit[2], 10, 1000, &rate)) {
         connection_status("Settings not saved: rate must be 10 to 1000 Hz.", 1);
+        g.conn_bad = 3;
         return 0;
     }
     if (!field_int(g.edit[3], 0, 60000, &disarm)) {
         connection_status("Settings not saved: disarm must be 0 (off) to 60000 ms.", 1);
+        g.conn_bad = 4;
         return 0;
     }
 
@@ -3471,11 +4180,11 @@ static void draw_combo_item(const DRAWITEMSTRUCT *d)
 {
     RECT r = d->rcItem;
     int edit = (d->itemState & ODS_COMBOBOXEDIT) != 0, off = (d->itemState & ODS_DISABLED) != 0;
-    fill_solid(d->hDC, r, !edit && (d->itemState & ODS_SELECTED) ? C_CHIP : C_FIELD);
+    fill_solid(d->hDC, r, !edit && (d->itemState & ODS_SELECTED) ? W_SEG_ON : W_FIELD);
     char text[128];
     combo_text(d->hwndItem, d->itemID == (UINT)-1 ? -1 : (LRESULT)d->itemID, text, sizeof text);
     r.left = edit ? S(10) : r.left + S(10); /* the closed box: same x as paint_combo */
-    text_in(d->hDC, g.f_body, off ? C_TEXT3 : C_TEXT, r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
+    text_in(d->hDC, g.f_body, off ? W_TEXT3 : W_TEXT, r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
 }
 static void paint_combo(HWND h, HDC wdc)
 {
@@ -3487,13 +4196,13 @@ static void paint_combo(HWND h, HDC wdc)
     HBITMAP bm = CreateCompatibleBitmap(wdc, r.right, r.bottom);
     HGDIOBJ ob = SelectObject(dc, bm);
     int on = IsWindowEnabled(h) != 0;
-    fill_solid(dc, r, C_CARD); /* the Input tab card behind the rounded corners */
-    round_rect(dc, r, S(6), C_FIELD, on && GetFocus() == h ? C_FOCUS_BD : C_FIELD_BD);
+    fill_solid(dc, r, W_BG); /* the pane behind the rounded corners */
+    round_rect(dc, r, S(6), W_FIELD, on && GetFocus() == h ? W_FOCUS : on ? W_LINE2 : W_LINE);
     char text[128];
     combo_text(h, SendMessageA(h, CB_GETCURSEL, 0, 0), text, sizeof text);
     RECT tr = {S(10), 0, r.right - S(30), r.bottom};
-    text_in(dc, g.f_body, on ? C_TEXT : C_TEXT3, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
-    chevron(dc, r.right - S(16), r.bottom / 2, on ? C_TEXT2 : C_TEXT3);
+    text_in(dc, g.f_body, on ? W_TEXT : W_TEXT3, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, text);
+    chevron(dc, r.right - S(16), r.bottom / 2, on ? W_TEXT2 : W_TEXT3);
     BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -3549,6 +4258,8 @@ static void input_status(const char *text, int error)
 {
     snprintf(g.input_status, sizeof g.input_status, "%s", text ? text : "");
     g.input_error = error;
+    if (g.input_status[0])
+        msg_touch(MSRC_INPUT);
     invalidate_fields();
 }
 
@@ -3571,6 +4282,7 @@ static void input_tab_refresh(void)
     for (size_t i = 0; i < sizeof redraw / sizeof redraw[0]; i++)
         if (redraw[i])
             InvalidateRect(redraw[i], NULL, FALSE);
+    msg_sync(); /* the Physical note moves the rows below it */
     invalidate_fields();
 }
 
@@ -3608,7 +4320,7 @@ static int config_commit(const hidway_config_t *next, const char *saved, int on_
     if(!g.preview&&!hidway_config_save("hidway.ini",&copy)) {
         const char *message="Could not save hidway.ini. Settings have not changed.";
         if(on_input_tab)input_status(message,1);
-        else{snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",message);invalidate_readouts();}
+        else pico_notice(message,SEV_ERR);
         return 0;
     }
     g.cfg=copy;
@@ -3681,6 +4393,7 @@ static void select_tab(int t)
         input_tab_load(); /* unapplied edits from an earlier visit are gone */
     g.tab = t;
     show_tab_controls();
+    msg_sync(); /* the message strip follows the tab (the Input hint) */
     if (g.tabs)
         InvalidateRect(g.tabs, NULL, FALSE);
     if (g.hwnd)
@@ -3689,13 +4402,12 @@ static void select_tab(int t)
 
 static void local_pico_notice(const char *message)
 {
-    snprintf(g.local_pico_notice, sizeof g.local_pico_notice, "%s", message);
-    invalidate_readouts();
+    pico_notice(message, SEV_WARN);
 }
 
 /* Pico on this PC: the existing checks, then the Gaming PC route with its
- * own saved values. Never ARMs. The result is shown in LIVE INPUT on the
- * Control tab, which it selects. */
+ * own saved values. Never ARMs. The result is shown in the message strip
+ * (the Control tab is selected). */
 static void use_local_pico(void)
 {
     select_tab(TAB_CONTROL);
@@ -3730,11 +4442,12 @@ static void use_local_pico(void)
         local_pico_notice(message);return;
     }
     if(route_select(HIDWAY_PROFILE_GAMING,"Pico on this PC: Gaming PC route saved - arm when ready",0)) {
-        snprintf(g.local_pico_notice,sizeof g.local_pico_notice,
+        char done[192];
+        snprintf(done,sizeof done,
             "Pico on this PC: virtual keys, clicks and wheels -> USB HID.\r\n"
             "Pointer %s. Press ARM when ready.",
             g.cfg.loopback_pointer_pico?"moves through Pico (experimental)":"stays native");
-        invalidate_readouts();
+        pico_notice(done,SEV_OK);
     }
 }
 
@@ -3751,19 +4464,25 @@ static void register_tabs_class(void)
     RegisterClassA(&wc);
 }
 
-/* Creation order is the keyboard order: tab strip, page controls in reading
- * order, then ARM / Pico on this PC / PANIC. */
+/* Creation order is the keyboard order, and follows the visual one: the
+ * rail first (ARM, Pico on this PC, PANIC), then the tab strip, the update
+ * banner's buttons and the controls of the pages in reading order. */
 static void create_controls(HWND h)
 {
     register_tabs_class();
-    /* Update banner in the header, first in reading order; hidden (and so
-     * skipped by Tab) until a newer release is found. */
+    g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
+    g.local_pico_button = mk(h, "BUTTON", "Pico on this PC", BS_OWNERDRAW | WS_TABSTOP, ID_LOCAL_PICO);
+    g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
+    if (g.armed && g.local_pico_button)
+        EnableWindow(g.local_pico_button, FALSE); /* same rule as set_armed() */
+    g.tabs = CreateWindowExA(0, "HIDwayTabs", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, h,
+                             (HMENU)(INT_PTR)ID_TABS, g.inst, NULL);
+    /* Update banner under the tab strip; hidden (and so skipped by Tab) until
+     * a newer release is found. */
     g.update_now = mk(h, "BUTTON", "Update now", BS_OWNERDRAW | WS_TABSTOP, ID_UPDATE_NOW);
     g.update_later = mk(h, "BUTTON", "Later", BS_OWNERDRAW | WS_TABSTOP, ID_UPDATE_LATER);
     ShowWindow(g.update_now, SW_HIDE);
     ShowWindow(g.update_later, SW_HIDE);
-    g.tabs = CreateWindowExA(0, "HIDwayTabs", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, h,
-                             (HMENU)(INT_PTR)ID_TABS, g.inst, NULL);
 
     /* Connection */
     char tmp[32];
@@ -3812,13 +4531,6 @@ static void create_controls(HWND h)
     SetWindowTheme(g.history, L"DarkMode_Explorer", NULL); /* dark scrollbar */
     subclass(g.history, list_proc);
 
-    /* every tab */
-    g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
-    g.local_pico_button = mk(h, "BUTTON", "Pico on this PC", BS_OWNERDRAW | WS_TABSTOP, ID_LOCAL_PICO);
-    g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
-    if (g.armed && g.local_pico_button)
-        EnableWindow(g.local_pico_button, FALSE); /* same rule as set_armed() */
-
     HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2], g.src[0], g.src[1], g.src[2],
                    g.monitor_button, g.replay_button, g.updates_button, g.local_pico_button, g.repeat,
                    g.profile_button[0], g.profile_button[1], g.input_apply, g.update_now, g.update_later};
@@ -3848,8 +4560,8 @@ static void add_tooltips(HWND hwnd)
     if (!g.tooltip)
         return;
     SendMessageA(g.tooltip, TTM_SETMAXTIPWIDTH, 0, S(300));
-    SendMessageA(g.tooltip, TTM_SETTIPBKCOLOR, C_CARD, 0); /* no visual styles: colours apply */
-    SendMessageA(g.tooltip, TTM_SETTIPTEXTCOLOR, C_TEXT, 0);
+    SendMessageA(g.tooltip, TTM_SETTIPBKCOLOR, W_SURF2, 0); /* no visual styles: colours apply */
+    SendMessageA(g.tooltip, TTM_SETTIPTEXTCOLOR, W_TEXT, 0);
     struct { HWND h; const char *text; } tips[] = {
         {g.arm, "ARM: send this PC's keyboard and mouse to the Gaming PC. Press again (or the toggle hotkey) to DISARM."},
         {g.local_pico_button, "Check the local Pico USB devices and the relay address, then select and save the Gaming PC route. Does not ARM."},
@@ -3866,6 +4578,16 @@ static void add_tooltips(HWND hwnd)
         {g.update_now, "Close HIDway and install the new version: the updater checks, downloads and installs it, then opens HIDway again (disarmed)."},
         {g.update_later, "Hide this until HIDway is opened again."},
     };
+    {   /* the message strip: the whole text of a long message */
+        TTTOOLINFOA ti = {0};
+        ti.cbSize = TTTOOLINFOA_V2_SIZE;
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = hwnd;
+        ti.uId = ID_MSG_TIP;
+        ti.rect = g.L.msg;
+        ti.lpszText = LPSTR_TEXTCALLBACKA;
+        SendMessageA(g.tooltip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+    }
     for (size_t i = 0; i < sizeof tips / sizeof tips[0]; i++) {
         if (!tips[i].h)
             continue;
@@ -3903,7 +4625,7 @@ static void apply_window_chrome(HWND hwnd)
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof dark);
     int corner = HW_DWMWCP_ROUND;
     DwmSetWindowAttribute(hwnd, HW_DWMWA_CORNER, &corner, sizeof corner);
-    COLORREF cap = C_BG, txt = C_TEXT2, bd = C_CARD_BD;
+    COLORREF cap = W_BG, txt = W_TEXT2, bd = W_LINE;
     DwmSetWindowAttribute(hwnd, HW_DWMWA_CAPTION, &cap, sizeof cap); /* seamless titlebar */
     DwmSetWindowAttribute(hwnd, HW_DWMWA_TEXT, &txt, sizeof txt);
     DwmSetWindowAttribute(hwnd, HW_DWMWA_BORDER, &bd, sizeof bd);
@@ -4152,6 +4874,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         load_mark_icon();
         resize_to_layout(hwnd, (const RECT *)lp);
         apply_layout();
+        msg_sync();
         if (!g.in_sizemove) /* never fight a drag in progress */
             keep_on_work_area(hwnd);
         RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
@@ -4175,7 +4898,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (mi->CtlType == ODT_LISTBOX)
             mi->itemHeight = (UINT)S(21);
         else if (mi->CtlType == ODT_COMBOBOX) /* closed box (itemID -1) and list items */
-            mi->itemHeight = (UINT)S(mi->itemID == (UINT)-1 ? 22 : 24);
+            mi->itemHeight = (UINT)S(24);
         return TRUE;
     }
     case WM_DRAWITEM: {
@@ -4190,17 +4913,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_CTLCOLORLISTBOX:
-        SetBkColor((HDC)wp, C_FIELD);
-        SetTextColor((HDC)wp, C_TEXT2);
+        SetBkColor((HDC)wp, W_FIELD);
+        SetTextColor((HDC)wp, W_TEXT2);
         return (LRESULT)g.b_field;
     case WM_CTLCOLOREDIT:
-        SetBkColor((HDC)wp, C_FIELD);
-        SetTextColor((HDC)wp, C_TEXT);
+        SetBkColor((HDC)wp, W_FIELD);
+        SetTextColor((HDC)wp, W_TEXT);
         return (LRESULT)g.b_field;
     case WM_CTLCOLORSTATIC: /* a greyed-out field stays a field */
         if ((HWND)lp == g.repeat_cps || (HWND)lp == g.click_cps) {
-            SetBkColor((HDC)wp, C_FIELD);
-            SetTextColor((HDC)wp, C_TEXT3);
+            SetBkColor((HDC)wp, W_FIELD);
+            SetTextColor((HDC)wp, W_TEXT3);
             return (LRESULT)g.b_field;
         }
         break;
@@ -4258,6 +4981,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_UPDATE_RESULT:
         update_result((int)wp, hw_update_check_tag());
         return 0;
+
+    case WM_NOTIFY: {
+        const NMHDR *nh = (const NMHDR *)lp;
+        if (nh && g.tooltip && nh->hwndFrom == g.tooltip && nh->code == TTN_GETDISPINFOA && nh->idFrom == ID_MSG_TIP) {
+            static char tip[256];
+            msg_tip_text(tip, sizeof tip);
+            ((NMTTDISPINFOA *)lp)->lpszText = tip;
+            return 0;
+        }
+        break;
+    }
 
     case WM_SEND_TICK:
         if((DWORD)wp==g.generation) {
@@ -4423,7 +5157,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (!g.cfg.loopback_mode) g.pending.source_physical = !g.pending.source_physical;
                 else g.pending.loopback_physical = !g.pending.loopback_physical;
                 g.input_dirty = 1;
-                invalidate_fields(); /* the experimental note */
+                msg_sync();          /* the experimental note moves the rows below it */
+                invalidate_fields();
                 break;
             case ID_SRC_TOUCHPAD:
                 if (!g.cfg.loopback_mode) { g.pending.source_touchpad = !g.pending.source_touchpad; g.input_dirty = 1; }
@@ -4463,6 +5198,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             badge_refresh();
             banner_sync(); /* hidden while armed, back after disarm */
+            msg_sync();    /* one or two message lines */
+            if (g.tabs && g.tab_dirty_drawn != g.input_dirty) { /* the amber dot on the Input tab */
+                g.tab_dirty_drawn = g.input_dirty;
+                InvalidateRect(g.tabs, NULL, FALSE);
+            }
             invalidate_readouts();
         } else if (wp == TIMER_PROBE) {
             monitor();
@@ -4627,8 +5367,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     GdiplusStartup(&g.gdip, &gsi, NULL);
     enable_dark_menus();
     timeBeginPeriod(1);
-    g.b_bg = CreateSolidBrush(C_BG);
-    g.b_field = CreateSolidBrush(C_FIELD);
+    g.b_bg = CreateSolidBrush(W_BG);
+    g.b_field = CreateSolidBrush(W_FIELD);
 
     HICON appicon = LoadIconA(inst, MAKEINTRESOURCEA(1));
     WNDCLASSA wc = {0};

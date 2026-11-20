@@ -161,7 +161,8 @@ static void ui_state(void)
     g.cfg.port = 47800; g.cfg.send_rate_hz = 250; g.cfg.auto_disarm_ms = 3000;
     g.cfg.relay_keyboard = g.cfg.relay_mouse = 1; g.cfg.source_physical = 1;
     g.cfg.virtual_click_cps = g.cfg.repeat_cps = 10; g.cfg.repeat_sources = 1; g.cfg.history_enabled = 1;
-    g.preview = 1; g.armed = 0; g.net_ok = 1; g.session_id = 456;
+    g.preview = 1; g.armed = 0; g.net_ok = 1; g.session_id = 456; g.toggle_hk_ok = 1;
+    strcpy(g.cfg.toggle.text, "ctrl+shift+f12"); strcpy(g.cfg.panic.text, "ctrl+alt+shift+end");
     output_count = input_count = input_at = 0;
     fixture_saves = 0; fixture_save_ok = 1; fixture_peer = 0;
     g.local_pico_notice[0] = 0;
@@ -177,6 +178,381 @@ static void queue_status(uint32_t session, uint32_t echoed_at)
     memset(p, 0, sizeof *p);
     p->session_id = session;
     p->client_time_us = echoed_at;
+}
+
+/* ---- Rail window: geometry, text fit, the message strip -------------------
+ * Positions are checked at 96, 144 and 192 DPI, on all four tabs, disarmed
+ * and armed, on both routes, with and without the update banner and with a
+ * message that takes two lines. */
+
+/* A child's rectangle in the main window's client coordinates. */
+static RECT child_rect(HWND h)
+{
+    RECT r = {0, 0, 0, 0};
+    if (h) {
+        GetWindowRect(h, &r);
+        MapWindowPoints(NULL, g.hwnd, (POINT *)&r, 2);
+    }
+    return r;
+}
+
+/* A combo's closed box (its window also holds the drop-down list). */
+static RECT closed_rect(HWND h)
+{
+    RECT r = child_rect(h), c;
+    char cls[16] = {0};
+    GetClassNameA(h, cls, sizeof cls);
+    if (!_stricmp(cls, "COMBOBOX") && GetClientRect(h, &c))
+        r.bottom = r.top + c.bottom;
+    return r;
+}
+
+static int inside(RECT in, RECT out)
+{
+    return in.left >= out.left && in.right <= out.right && in.top >= out.top && in.bottom <= out.bottom;
+}
+
+static int touches(RECT a, RECT b)
+{
+    RECT x;
+    return IntersectRect(&x, &a, &b);
+}
+
+static size_t page_controls(page_control *p)
+{
+    page_control all[] = {
+        {g.edit[0],TAB_CONNECTION},{g.edit[1],TAB_CONNECTION},{g.edit[2],TAB_CONNECTION},{g.edit[3],TAB_CONNECTION},
+        {g.save,TAB_CONNECTION},
+        {g.profile_button[0],TAB_INPUT},{g.profile_button[1],TAB_INPUT},{g.cb[0],TAB_INPUT},{g.cb[1],TAB_INPUT},
+        {g.src[0],TAB_INPUT},{g.src[1],TAB_INPUT},{g.src[2],TAB_INPUT},{g.pointer_route,TAB_INPUT},{g.repeat,TAB_INPUT},
+        {g.repeat_button,TAB_INPUT},{g.repeat_cps,TAB_INPUT},{g.repeat_source,TAB_INPUT},{g.click_cps,TAB_INPUT},
+        {g.input_apply,TAB_INPUT},
+        {g.monitor_button,TAB_TOOLS},{g.replay_button,TAB_TOOLS},{g.updates_button,TAB_TOOLS},{g.cb[2],TAB_TOOLS},
+        {g.clear,TAB_TOOLS},{g.history,TAB_TOOLS},
+    };
+    memcpy(p, all, sizeof all);
+    return sizeof all / sizeof all[0];
+}
+
+static const char two_line_notice[] = "Pico keyboard and mouse USB devices were not both found here.\r\n"
+                                      "Use this button on the Gaming PC with Pico USB connected.";
+
+/* One combination: DPI, banner, a two-line message, tab, route (Gaming PC
+ * also ticks Physical, which adds the experimental note), disarmed or armed. */
+static void layout_case(UINT dpi, int banner, int two_lines, int tab, int gaming, int armed)
+{
+    g.armed = 0;
+    ui_state();
+    g.dpi = dpi;
+    create_fonts();
+    g.cfg.loopback_mode = gaming;
+    g.cfg.loopback_physical = gaming;
+    strcpy(g.update_tag, "v0.6.1");
+    strcpy(g.cfg.toggle.text, "ctrl+shift+f12");
+    g.update_offer = banner ? 1 : 2;
+    g.armed = armed;
+    g.armed_at_ms = timeGetTime() - 83000;
+    g.status_seen = armed;
+    input_tab_load();
+    connection_status(two_lines ? two_line_notice : NULL, two_lines);
+    select_tab(tab);
+    banner_sync();
+    compute_layout();
+    apply_layout();
+    msg_sync();
+    compute_layout();
+    apply_layout();
+}
+
+/* The layout is consistent: everything inside its area, nothing overlapping. */
+#define ECHK(x) do { unsigned v_ = (unsigned)!!(x); if (v_) printf("  check line %d\n", __LINE__); e += v_; } while (0)
+static unsigned layout_errors(void)
+{
+    layout_t *L = &g.L;
+    unsigned e = 0;
+    RECT x;
+    int one = S(1);
+
+    /* rail: ARM, Pico on this PC, divider, PANIC from top to bottom */
+    RECT a = child_rect(g.arm), p = child_rect(g.local_pico_button), n = child_rect(g.panic), t = child_rect(g.tabs);
+    ECHK(!EqualRect(&a, &L->arm) || !EqualRect(&p, &L->local_pico) || !EqualRect(&n, &L->panic) || !EqualRect(&t, &L->tabs));
+    ECHK(!inside(a, L->rail) || !inside(p, L->rail) || !inside(n, L->rail));
+    ECHK(!(a.bottom <= p.top && p.bottom < L->div_y && L->div_y < n.top && n.bottom <= L->H));
+    ECHK(!(L->rail.right <= L->tabs.left && L->rail.right == S(208) && L->W == S(700) && L->H == S(432)));
+    for (int i = 0; i < 4; i++)
+        ECHK(!(L->fact_cy[i] > L->state.bottom && L->fact_cy[i] + S(10) < a.top));
+    ECHK(!(L->state.bottom < L->fact_cy[0] && L->mark.bottom < L->state.top));
+
+    /* pane: tab strip, banner, body, one message strip */
+    ECHK(!inside(L->body, L->page) || !inside(L->msg, L->page) || !(L->tabs.bottom <= L->body.top));
+    ECHK(L->msg.top - L->body.bottom != S(10) || L->msg.bottom != S(420));
+    ECHK(!(L->msg.bottom - L->msg.top == S(g.msg_lines == 2 ? 46 : 34) || abs((L->msg.bottom - L->msg.top) - S(g.msg_lines == 2 ? 46 : 34)) <= 1));
+    if (banner_visible()) {
+        ECHK(!inside(L->banner, L->page) || touches(L->banner, L->tabs) || !(L->banner.bottom <= L->body.top));
+        ECHK(!inside(L->banner_now, L->banner) || !inside(L->banner_later, L->banner) || touches(L->banner_now, L->banner_later));
+        ECHK(!shown(g.update_now) || !shown(g.update_later));
+        ECHK(!(L->banner_later.right == L->banner.right - S(6) && L->banner.top >= L->tabs.bottom + S(8)));
+    } else {
+        ECHK(shown(g.update_now) || shown(g.update_later));
+    }
+
+    /* the visible page controls sit inside the body and never overlap */
+    page_control pc[25];
+    size_t np = page_controls(pc);
+    RECT seen[25];
+    size_t ns = 0;
+    for (size_t i = 0; i < np; i++) {
+        if (pc[i].tab != g.tab)
+            continue;
+        RECT r = closed_rect(pc[i].h);
+        ECHK(!shown(pc[i].h) || !inside(r, L->body));
+        if (g.tab == TAB_INPUT && pc[i].h == g.input_apply)
+            ECHK(!(r.bottom <= L->body.bottom));
+        for (size_t k = 0; k < ns; k++)
+            ECHK(touches(r, seen[k]));
+        seen[ns++] = r;
+    }
+    if (g.tab == TAB_CONTROL) {
+        for (int i = 0; i < 4; i++)
+            ECHK(!inside(L->tiles[i], L->body) || (i && L->tiles[i].left < L->tiles[i - 1].right + S(7)));
+        ECHK(!inside(L->live, L->body) || touches(L->live, L->tiles[3]) || L->live.bottom != L->body.bottom);
+        ECHK(!(L->live_head_cy - S(9) >= L->tiles[0].bottom && L->live_head_cy + S(9) <= L->live.top));
+        ECHK(!(L->head_cy + S(9) <= L->tiles[0].top && L->head_cy - S(10) >= L->body.top));
+        live_metrics_t m;
+        for (int armed = 0; armed < 2; armed++) {
+            live_metrics(armed, L->live, &m);
+            ECHK(!(m.bottom <= L->live.bottom && m.row0 > m.div));
+        }
+    } else if (g.tab == TAB_CONNECTION) {
+        for (int i = 0; i < 4; i++)
+            ECHK(!inside(L->frame[i], L->body));
+        ECHK(!inside(L->save, L->body) || touches(L->save, L->frame[3]) || touches(L->frame[0], L->frame[1]));
+        ECHK(!(L->conn_hint_cy + S(8) <= L->body.bottom && L->link_cy + 2 * S(20) + S(10) <= L->body.bottom));
+        ECHK(!(L->conn_head_cy[2] + S(10) < L->link_cy - S(8) && L->conn_hint_cy + S(8) < L->conn_head_cy[2] - S(8)));
+    } else if (g.tab == TAB_INPUT) {
+        RECT ptr = closed_rect(g.pointer_route), rs = closed_rect(g.repeat_source), rb = closed_rect(g.repeat_button);
+        ECHK(!inside(L->seg, L->body) || !inside(L->profile[0], L->seg) || !inside(L->profile[1], L->seg));
+        ECHK(!inside(L->limited, L->body) || !inside(L->apply, L->body) || !inside(L->vr, L->body));
+        ECHK(!inside(ptr, L->body) || !inside(rs, L->body) || !inside(rb, L->body));
+        ECHK(!(ptr.bottom - ptr.top >= S(24) && ptr.bottom - ptr.top <= S(32)));
+        ECHK(touches(L->limited, L->apply) || !inside(L->repeat_cps, L->body) || !inside(L->click_cps, L->body));
+        ECHK(L->note_shown != (g.cfg.loopback_mode && g.pending.loopback_physical));
+        if (L->note_shown)
+            ECHK(!inside(L->note, L->body) || !(L->note.bottom <= L->src[1].top) || !(L->src[0].bottom <= L->note.top));
+        ECHK(L->vr.left < L->seg.right + S(10) || L->vr.right > L->repeat.left - S(10));
+    } else {
+        for (int i = 0; i < 3; i++) {
+            RECT b = i == 0 ? L->monitor_btn : i == 1 ? L->replay_btn : L->updates;
+            ECHK(!inside(b, L->body));
+        }
+        ECHK(touches(L->monitor_btn, L->replay_btn) || touches(L->replay_btn, L->updates));
+        ECHK(!(L->monitor_btn.bottom + S(8) < L->hk_cy && L->hk_cy + S(10) < L->rh_cy - S(10)));
+        e += !inside(L->list, L->body) || L->list.bottom != L->body.bottom || !(L->clear.bottom <= L->list.top) ||
+             !(L->rh_cy + S(12) <= L->list.top) || !(L->list.bottom - L->list.top >= S(100));
+        ECHK(touches(L->history_cb, L->clear));
+    }
+    (void)x;
+    (void)one;
+    return e;
+}
+
+/* The glyph and label of every rail fact, the state block and the buttons fit
+ * their boxes (an ellipsis would hide text: it is not allowed to happen for
+ * any state or message of the application). */
+static unsigned text_errors(HDC dc)
+{
+    layout_t *L = &g.L;
+    unsigned e = 0;
+    int value_w = L->rail.right - S(16) - (L->fact_vx + S(17));
+    static const char *const facts[] = {"reachable", "no reply", "probing", "socket error", "invalid key", "waiting",
+                                         "linked", "link lost", "On this PC", "Partly detected", "Not on this PC",
+                                         "Checking...", "Gaming PC on", "Gaming PC off", "Gaming PC off?"};
+    for (size_t i = 0; i < sizeof facts / sizeof facts[0]; i++)
+        ECHK(text_w(dc, g.f_fact, facts[i]) > value_w);
+    static const char *const targets[] = {"On", "Off", "Asleep", "Waking", "Off?", "—"};
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++)
+        ECHK(text_w(dc, g.f_fact, targets[i]) > value_w);
+    ECHK(text_w(dc, g.f_btn, "Remote PC") > L->rail.right - S(16) - L->fact_vx);
+    ECHK(text_w(dc, g.f_btn, "Gaming PC") > L->rail.right - S(16) - L->fact_vx);
+    ECHK(tracked_w(dc, g.f_section, "TARGET") + S(6) > L->fact_vx - L->fact_x);
+    /* state block */
+    int tx = L->state.left + S(12 + 14 + 11), inner = L->state.right - S(12);
+    ECHK(tx + text_w(dc, g.f_pill, "DISARMED") > inner);
+    ECHK(tx + text_w(dc, g.f_pill, "ARMED") + S(6) + text_w(dc, g.f_timer, "00:00") > inner);
+    ECHK(tx + text_w(dc, g.f_pill, "ARMED") + S(6) + text_w(dc, g.f_mono, "9:59:59") > inner); /* hours: smaller face */
+    static const char *const subs[] = {"Remote PC route", "Gaming PC route", "To the Gaming PC", "Through the Pico"};
+    for (size_t i = 0; i < sizeof subs / sizeof subs[0]; i++)
+        ECHK(tx + text_w(dc, g.f_label, subs[i]) > inner);
+    ECHK(L->mark.right + S(9) + text_w(dc, g.f_title, "HIDway") + S(8) + text_w(dc, g.f_label, "v10.20.300") > L->rail.right - S(16));
+    /* buttons: ARM (two lines), Pico on this PC, PANIC */
+    int aw = L->arm.right - L->arm.left - S(16);
+    ECHK(text_w(dc, g.f_btn_big, "DISARM") + 6 * S(1) > aw);
+    ECHK(text_w(dc, g.f_arm_sub, "Ctrl+Alt+Shift+F12") > aw);
+    ECHK(font_h(dc, g.f_btn_big) + font_h(dc, g.f_arm_sub) > L->arm.bottom - L->arm.top);
+    ECHK(text_w(dc, g.f_btn, "Pico on this PC") > L->local_pico.right - L->local_pico.left - S(16));
+    ECHK(S(14) + S(9) + text_w(dc, g.f_panic, "PANIC") + 5 * S(2) > L->panic.right - L->panic.left);
+    /* tabs: all four with the Input dot, inside the strip */
+    int was = g.input_dirty;
+    RECT rc[TAB_COUNT];
+    POINT dp;
+    g.input_dirty = 1;
+    tabs_layout(dc, rc, &dp);
+    g.input_dirty = was;
+    ECHK(rc[TAB_COUNT - 1].right > L->tabs.right - L->tabs.left - S(12));
+    /* tiles: values, labels, the WAKE chip clear of the value */
+    for (int i = 0; i < 4; i++) {
+        int w = L->tiles[i].right - L->tiles[i].left;
+        ECHK(tracked_w(dc, g.f_section, i == 3 ? "GAMING PC" : i == 0 ? "RTT" : i == 1 ? "LOSS" : "RATE") + S(22) > w);
+        ECHK(text_w(dc, g.f_tile, i == 0 ? "999 ms" : i == 1 ? "99.9 %" : i == 2 ? "1000/s" : "Asleep") + S(22) > w);
+    }
+    ECHK(text_w(dc, g.f_tile, "Off") + S(11) + S(8) >= L->tiles[3].right - L->tiles[3].left - S(9) - text_w(dc, g.f_chip, "WAKE") - 2 * S(8));
+    /* Control head: CONNECTION, chip, status and a typical address in one row */
+    int head = tracked_w(dc, g.f_section, "CONNECTION") + S(10) + text_w(dc, g.f_chip, "E2E OFF") + 2 * S(8) + S(12) +
+               text_w(dc, g.f_label, "linked · serial open") + S(24) + text_w(dc, g.f_mono_s, "255.255.255.255:65535");
+    ECHK(head > L->body.right - L->body.left);
+    e += text_w(dc, g.f_semi, "Input capture is off") + S(8) + text_w(dc, g.f_label, "Press ARM or Ctrl+Shift+F12 to start relaying") >
+         L->live.right - L->live.left - S(28);
+    ECHK(S(110) + text_w(dc, g.f_fact, "Keyboard + mouse through the Pico to this PC") > L->live.right - L->live.left - S(28));
+    ECHK(S(110) + text_w(dc, g.f_fact, "Virtual, Physical through Pico") > L->live.right - L->live.left - S(28));
+    ECHK(S(110) + text_w(dc, g.f_fact, "repeat Forward 25/s, 25/s") > L->live.right - L->live.left - S(28));
+    /* Connection */
+    int bw = L->body.right - L->body.left;
+    ECHK(text_w(dc, g.f_label, "Relay address") > L->frame[0].right - L->frame[0].left);
+    ECHK(text_w(dc, g.f_label, "Send rate (Hz)") + S(8) > L->frame[3].left - L->frame[2].left);
+    ECHK(text_w(dc, g.f_label, "Auto-disarm (ms)") > L->frame[3].right - L->frame[3].left);
+    ECHK(tracked_w(dc, g.f_section, "GAMING PC ROUTE") + S(10) + text_w(dc, g.f_label, "saved separately for each route") > bw);
+    ECHK(text_w(dc, g.f_label, "Save disarms first. A wrong value is refused and nothing changes.") > bw);
+    ECHK(S(110) + text_w(dc, g.f_fact, "KEY ERROR: invalid key in hidway.ini") > bw);
+    ECHK(S(17) + text_w(dc, g.f_fact, "linked · serial open, RTT 999 ms") + S(110) > bw);
+    ECHK(text_w(dc, g.f_btn, "Saved ✓") + S(16) > L->save.right - L->save.left);
+    /* Input */
+    int lw = L->seg.right - L->seg.left, rw = L->repeat.right - L->repeat.left;
+    ECHK(text_w(dc, g.f_btn, "Remote PC") + S(15) + S(10) > L->profile[0].right - L->profile[0].left);
+    ECHK(text_w(dc, g.f_btn, "Gaming PC") + S(15) + S(10) > L->profile[1].right - L->profile[1].left);
+    ECHK(text_w(dc, g.f_sub, "The Pico is plugged into this PC.") > lw);
+    ECHK(text_w(dc, g.f_label, "Gaming PC pointer") > lw);
+    static const struct { const char *s; int box; } boxes[] = {{"Keyboard", 0}, {"Mouse", 1}, {"Physical", 2}, {"Touchpad", 3}, {"Virtual / remote", 4}};
+    for (int i = 0; i < 5; i++) {
+        RECT b = i == 0 ? L->cb[0] : i == 1 ? L->cb[1] : i == 2 ? L->src[0] : i == 3 ? L->src[1] : L->src[2];
+        ECHK(S(1) + S(16) + S(8) + text_w(dc, g.f_body, boxes[i].s) > b.right - b.left);
+    }
+    ECHK(S(25) + text_w(dc, g.f_body, "Hold to repeat") > L->repeat.right - L->repeat.left);
+    ECHK(text_w(dc, g.f_label, "Button") + S(8) + text_w(dc, g.f_label, "Repeat clicks/sec") > rw);
+    ECHK(text_w(dc, g.f_label, "Repeat source") > rw || text_w(dc, g.f_label, "Virtual clicks/sec") > rw);
+    ECHK(text_w(dc, g.f_label, "1-25 per button") + S(8) > L->body.right - L->click_cps.right);
+    ECHK(text_lines(dc, g.f_sub, "Last ARM: 999999 extra click attempts limited", rw) > 2);
+    ECHK(text_lines(dc, g.f_sub, "Experimental: keys, buttons and wheel of this PC go through the Pico.", S(230)) > 2);
+    ECHK(font_h(dc, g.f_sub) * 2 > S(32));
+    ECHK(text_w(dc, g.f_btn, "Apply and save") + S(16) > L->apply.right - L->apply.left);
+    /* Tools */
+    int tw = L->monitor_btn.right - L->monitor_btn.left;
+    static const char *const titles[] = {"Monitor", "Replay...", "Updates", "Stop"};
+    static const char *const subs2[] = {"devices and events", "play a recording", "check for updates", "stop playback"};
+    for (int i = 0; i < 4; i++)
+        ECHK(S(22) + text_w(dc, g.f_semi, titles[i]) > tw || S(22) + text_w(dc, g.f_sub, subs2[i]) > tw);
+    ECHK(font_h(dc, g.f_semi) + font_h(dc, g.f_sub) > L->monitor_btn.bottom - L->monitor_btn.top);
+    ECHK(text_w(dc, g.f_label, "Toggle") > S(46) || text_w(dc, g.f_label, "Panic") > S(42));
+    {   /* the two hotkey groups, widest plausible, in one row */
+        int x = 0;
+        for (int k = 0; k < 2; k++) {
+            x += k == 0 ? S(46) : S(42);
+            const char *const toks_t[] = {"Ctrl", "Shift", "F12"}, *const toks_p[] = {"Ctrl", "Alt", "Shift", "End"};
+            const char *const *toks = k == 0 ? toks_t : toks_p;
+            for (int i = 0; i < (k == 0 ? 3 : 4); i++)
+                x += text_w(dc, g.f_chip, toks[i]) + 2 * S(8) + S(5);
+            x += S(13);
+        }
+        ECHK(x > bw);
+    }
+    e += tracked_w(dc, g.f_section, "RECENT INPUT") + S(10) + text_w(dc, g.f_label, "memory only") + S(8) >
+         L->history_cb.left - L->body.left;
+    /* banner text and buttons */
+    int room = L->banner_now.left - S(8) - (L->banner.left + S(35));
+    ECHK(text_w(dc, g.f_btn, "HIDway v10.20.300 is available") > room);
+    ECHK(text_w(dc, g.f_btn, "Preview: the updater is not started") > room);
+    ECHK(text_w(dc, g.f_btn, "The updater did not start") > room);
+    ECHK(text_w(dc, g.f_chip, "Update now") + S(10) > L->banner_now.right - L->banner_now.left);
+    ECHK(text_w(dc, g.f_chip, "Later") + S(10) > L->banner_later.right - L->banner_later.left);
+    ECHK(font_h(dc, g.f_chip) > L->banner_now.bottom - L->banner_now.top);
+    return e;
+}
+
+/* Every message of the application takes at most two lines of the strip. */
+static unsigned message_fit_errors(HDC dc)
+{
+    unsigned e = 0;
+    static const char *const messages[] = {
+        "Settings not saved: enter the relay address.",
+        "Settings not saved: port must be 1 to 65535.",
+        "Settings not saved: rate must be 10 to 1000 Hz.",
+        "Settings not saved: disarm must be 0 (off) to 60000 ms.",
+        "Could not save hidway.ini. Settings have not changed.",
+        "Settings not saved: clicks/sec must be 1 to 25.",
+        "Settings not saved: the repeat source includes a source that is not ticked under Sources.",
+        "Saved. Press ARM when ready.",
+        "Gaming PC route selected and saved. Press ARM when ready.",
+        "Remote PC route selected and saved. Press ARM when ready.",
+        "DISARM before selecting Pico on this PC.",
+        "Save the Pi relay address and port on the Connection tab first.",
+        "Save the Pi relay address on the Connection tab first.\r\n127.0.0.1 / localhost cannot forward USB HID through the Pi.",
+        two_line_notice,
+        "The Gaming PC route uses relay 192.168.100.10:47800. Select Gaming PC on the Input tab and check its address on the Connection tab.",
+        "Pico on this PC: virtual keys, clicks and wheels -> USB HID.\r\nPointer moves through Pico (experimental). Press ARM when ready.",
+        "Physical through the Pico: the Pico is not on this PC - not armed",
+        "The Pico did not return the input - auto-disarmed",
+        "Input loop through the Pico detected - auto-disarmed",
+        "Toggle hotkey Ctrl+Alt+Shift+F12 is in use — set toggle_hotkey in hidway.ini",
+        "Armed. Toggle with Ctrl+Alt+Shift+F12. PANIC releases every key and button.",
+        "Ready. Nothing is sent until you press ARM.",
+        "Changes not applied yet. Apply and save disarms first, then saves.",
+        "Changes not applied yet. Programs that read Raw Input still see this PC's own keyboard and mouse too.",
+        "Programs that read Raw Input still see this PC's own keyboard and mouse too. The pointer stays native. Apply and save disarms first.",
+        "Apply and save disarms first; changes not applied are dropped when you leave this tab. Hold to repeat replaces dragging for its button.",
+    };
+    for (size_t i = 0; i < sizeof messages / sizeof messages[0]; i++) {
+        int lines = text_lines(dc, g.f_fact, messages[i], msg_text_w());
+        if (lines > 2)
+            printf("message takes %d lines at %u DPI: %s\n", lines, g.dpi, messages[i]);
+        e += lines > 2;
+    }
+    return e;
+}
+
+/* The client area painted into a bitmap, for pixel checks. */
+static HBITMAP paint_bitmap(HDC *mdc_out)
+{
+    HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
+    HBITMAP bm = CreateCompatibleBitmap(sdc, g.L.W, g.L.H);
+    SelectObject(mdc, bm);
+    RECT all = {0, 0, g.L.W, g.L.H};
+    paint_content(mdc, all);
+    ReleaseDC(NULL, sdc);
+    *mdc_out = mdc;
+    return bm;
+}
+
+static void free_bitmap(HDC mdc, HBITMAP bm)
+{
+    DeleteDC(mdc);
+    DeleteObject(bm);
+}
+
+/* Optional: HIDWAY_TEST_SHOTS=<folder> writes screenshots of the states the
+ * previews cannot reach (messages), through the production save_screenshot(). */
+static void test_shot(const char *name)
+{
+    const char *dir = getenv("HIDWAY_TEST_SHOTS");
+    if (!dir || !dir[0])
+        return;
+    RECT r = {0, 0, g.L.W, g.L.H};
+    AdjustWindowRectExForDpi(&r, WIN_STYLE, FALSE, 0, g.dpi);
+    /* shown off-screen, as the preview runs are, so the edit controls paint too */
+    SetWindowPos(g.hwnd, NULL, -20000, -20000, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(g.hwnd, SW_SHOWNOACTIVATE);
+    snprintf(g.shot_path, sizeof g.shot_path, "%s\\%s.bmp", dir, name);
+    save_screenshot(g.hwnd);
+    g.shot_path[0] = 0;
+    ShowWindow(g.hwnd, SW_HIDE);
 }
 
 int main(void)
@@ -631,6 +1007,9 @@ int main(void)
     VERIFY(RegisterClassA(&hud)!=0);
     g.hwnd=CreateWindowExA(0,hud.lpszClassName,"HUD fixture",WIN_STYLE,0,0,200,200,NULL,NULL,g.inst,NULL);
     VERIFY(g.hwnd!=NULL&&!IsWindowVisible(g.hwnd));
+    /* GDI+ is what draws the glyphs and rounded shapes: start it for the pixel checks */
+    ULONG_PTR gdip_token=0;HW_GdiplusStartupInput gdip_input={1,NULL,FALSE,FALSE};
+    VERIFY(GdiplusStartup(&gdip_token,&gdip_input,NULL)==0);
     create_fonts();compute_layout();create_controls(g.hwnd);
     ui_state();
     /* Existing command numbers are unchanged (tests and tools post them). */
@@ -684,27 +1063,238 @@ int main(void)
     /* The posted number of the retired Input options button opens the Input tab. */
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_OPTIONS,BN_CLICKED),0);VERIFY(g.tab==TAB_INPUT&&!g.armed);
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_COMPACT,BN_CLICKED),0);VERIFY(g.tab==TAB_INPUT&&!fixture_saves);
-    /* One size for every tab; the action row is below every page. It fits a
-     * 1366x768 work area at 100 % and a 1920x1080 one at 150 %. */
-    VERIFY(LAYOUT_H<=520&&g.L.H==S(LAYOUT_H)&&g.L.arm.bottom<g.L.H&&g.L.panic.bottom<g.L.H&&g.L.local_pico.bottom<g.L.H);
-    VERIFY(g.L.tabs.bottom<=g.L.page.top&&g.L.live.bottom<=g.L.arm.top&&g.L.settings.bottom<=g.L.arm.top&&
-           g.L.input.bottom<=g.L.arm.top&&g.L.recent.bottom<=g.L.arm.top&&g.L.status.bottom<=g.L.input.bottom);
+    /* ---- The Rail window: 700 x 432, a rail on the left (state, facts, ARM,
+     * Pico on this PC, PANIC) and the tab pane on the right. It fits a
+     * 1366x768 screen at 150 % (910x512 logical) and 1920x1080 at 150 %. ---- */
+    VERIFY(LAYOUT_W==700&&LAYOUT_H==432&&g.L.W==S(LAYOUT_W)&&g.L.H==S(LAYOUT_H));
     RECT frame96={0,0,S(LAYOUT_W),S(LAYOUT_H)};AdjustWindowRectExForDpi(&frame96,WIN_STYLE,FALSE,0,96);
     VERIFY(frame96.bottom-frame96.top<=728&&frame96.right-frame96.left<=1366);
     g.dpi=144;create_fonts();compute_layout();apply_layout();
     RECT frame144={0,0,g.L.W,g.L.H};AdjustWindowRectExForDpi(&frame144,WIN_STYLE,FALSE,0,144);
-    VERIFY(g.L.H==780&&frame144.bottom-frame144.top<=1032&&frame144.right-frame144.left<=1920);
-    /* LIVE INPUT reaches down to just above the action row at every DPI, like
-     * the cards of the other tabs (no empty band on Control). */
+    VERIFY(g.L.W==1050&&g.L.H==648&&frame144.bottom-frame144.top<=720&&frame144.right-frame144.left<=1366);
+    /* Every combination of DPI, tab, route, banner and message length: all
+     * inside their areas, nothing overlapping, every text inside its box. */
     for(UINT dpi=96;dpi<=192;dpi+=48) {
-        g.dpi=dpi;compute_layout();
-        VERIFY(g.L.live.bottom==g.L.recent.bottom&&g.L.live.bottom<g.L.arm.top&&g.L.arm.top-g.L.live.bottom<=S(14)&&
-               g.L.live.top>g.L.stats.bottom);
+        for(int armed=0;armed<2;armed++)for(int tab=0;tab<TAB_COUNT;tab++)for(int gaming=0;gaming<2;gaming++)
+        for(int banner=0;banner<2;banner++)for(int two=0;two<2;two++) {
+            layout_case(dpi,banner,two,tab,gaming,armed);
+            unsigned errors=layout_errors();
+            if(errors)printf("layout: dpi %u armed %d tab %d gaming %d banner %d two-line %d: %u\n",dpi,armed,tab,gaming,banner,two,errors);
+            VERIFY(errors==0);
+            VERIFY((!two||g.msg_lines==2)&&banner_visible()==(banner&&!armed));
+            if(banner&&!armed) {
+                /* the body starts 38 px lower while the banner shows */
+                RECT with=g.L.body;g.update_offer=2;compute_layout();
+                VERIFY(abs((with.top-g.L.body.top)-S(38))<=1);
+                g.update_offer=1;compute_layout();
+            }
+        }
+        layout_case(dpi,0,0,TAB_CONTROL,0,0);
+        HDC dc=GetDC(g.hwnd);
+        unsigned errors=text_errors(dc)+message_fit_errors(dc);
+        if(errors)printf("text: dpi %u: %u\n",dpi,errors);
+        VERIFY(errors==0);
+        /* the strip's two-line size is exactly what a two-line message needs */
+        VERIFY(text_lines(dc,g.f_fact,two_line_notice,msg_text_w())==2&&text_lines(dc,g.f_fact,"Ready. Nothing is sent until you press ARM.",msg_text_w())==1);
+        ReleaseDC(g.hwnd,dc);
     }
-    g.dpi=144;compute_layout();
-    g.dpi=96;create_fonts();compute_layout();apply_layout();
-    /* WAKE sits on the value line of a GAMING PC tile wide enough for it. */
-    VERIFY(g.L.tiles[3].right-g.L.tiles[3].left>=S(140)&&g.L.tiles[3].right<=g.L.stats.right-S(14));
+    g.armed=0;g.update_offer=0;g.dpi=96;create_fonts();ui_state();banner_sync();compute_layout();apply_layout();msg_sync();
+    VERIFY(g.L.H==S(432)&&!g.local_pico_notice[0]);
+
+    /* Rail buttons and tab strip are in place and never hidden; hidden page
+     * controls are not focusable and Tab follows the visual order: rail first
+     * (ARM, Pico on this PC, PANIC), then the tab strip, the banner, the body. */
+    for(int t=0;t<TAB_COUNT;t++) {
+        g.update_offer=1;strcpy(g.update_tag,"v0.6.1");select_tab(t);banner_sync();
+        HWND order[48];int n=0;
+        HWND item=GetNextDlgTabItem(g.hwnd,NULL,FALSE);
+        for(HWND first=item;item&&n<48;) {
+            order[n++]=item;
+            item=GetNextDlgTabItem(g.hwnd,item,FALSE);
+            if(item==first)break;
+        }
+        VERIFY(n>=6&&order[0]==g.arm&&order[1]==g.local_pico_button&&order[2]==g.panic&&order[3]==g.tabs&&
+               order[4]==g.update_now&&order[5]==g.update_later);
+        page_control pc[25];size_t np=page_controls(pc);
+        for(int i=6;i<n;i++) {
+            int found=0;
+            for(size_t k=0;k<np;k++)if(pc[k].h==order[i]){found=1;VERIFY(pc[k].tab==t&&shown(order[i]));}
+            VERIFY(found);
+        }
+        if(t==TAB_INPUT)VERIFY(order[6]==g.profile_button[0]&&order[n-1]==g.input_apply);
+        if(t==TAB_CONNECTION)VERIFY(order[6]==g.edit[0]&&order[n-1]==g.save);
+        if(t==TAB_TOOLS)VERIFY(order[6]==g.monitor_button);
+        if(t==TAB_CONTROL)VERIFY(n==6); /* the Control tab has no controls of its own */
+        VERIFY(visibility_errors(page,n_page,always,n_always)==0);
+    }
+    g.update_offer=0;banner_sync();select_tab(TAB_CONTROL);
+
+    /* ---- The one message strip: every message goes through it with its
+     * severity; each stays until its writer clears it. ---- */
+    ui_state();
+    char strip[256];int sev;
+    msg_current(strip,sizeof strip,&sev);
+    VERIFY(!strcmp(strip,"Ready. Nothing is sent until you press ARM.")&&sev==SEV_INFO);
+    strcpy(g.cfg.toggle.text,"ctrl+shift+f12");
+    g.armed=1;msg_current(strip,sizeof strip,&sev);
+    VERIFY(strstr(strip,"Armed. Toggle with Ctrl+Shift+F12")&&sev==SEV_OK);
+    g.armed=0;
+    /* the hotkey warning: on every tab, and on Tools above everything else */
+    g.toggle_hk_ok=0;
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Toggle hotkey Ctrl+Shift+F12 is in use")&&sev==SEV_WARN);
+    connection_status("Settings not saved: port must be 1 to 65535.",1);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"port must be")&&sev==SEV_ERR); /* latest message first */
+    select_tab(TAB_TOOLS);msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"is in use")&&sev==SEV_WARN);
+    select_tab(TAB_CONTROL);g.toggle_hk_ok=1;
+    /* Connection status line: error severity, stays until Save works or the fields reload */
+    select_tab(TAB_CONNECTION);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"port must be")&&sev==SEV_ERR);
+    msg_sync();
+    connection_fields_load();
+    msg_current(strip,sizeof strip,&sev);VERIFY(!strcmp(strip,"Ready. Nothing is sent until you press ARM.")&&sev==SEV_INFO);
+    /* Pico notices: warnings, errors and the success line, each with its own severity */
+    select_tab(TAB_CONTROL);
+    pico_notice("DISARM before selecting Pico on this PC.",SEV_WARN);
+    msg_current(strip,sizeof strip,&sev);VERIFY(!strcmp(strip,"DISARM before selecting Pico on this PC.")&&sev==SEV_WARN);
+    pico_notice("Could not save hidway.ini. Settings have not changed.",SEV_ERR);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Could not save")&&sev==SEV_ERR);
+    pico_notice("Pico on this PC: virtual keys.\r\nPointer stays native. Press ARM when ready.",SEV_OK);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Press ARM when ready")&&sev==SEV_OK);
+    msg_sync();VERIFY(g.msg_lines==2&&g.L.msg.bottom-g.L.msg.top>=S(45)&&g.L.msg.top==S(374)&&g.L.body.bottom==S(364));
+    select_tab(TAB_TOOLS);msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Press ARM when ready")); /* still there on another tab */
+    select_tab(TAB_CONTROL);
+    /* LIVE INPUT showed it only while disarmed: ARMED shows the armed line, and the notice is back after DISARM */
+    g.armed=1;msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Armed. Toggle with")&&sev==SEV_OK);
+    g.armed=0;msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Press ARM when ready")&&sev==SEV_OK);
+    /* the Pico notice stays as long as before: until ARM or a save clears it */
+    g.local_pico_notice[0]=0;msg_sync();
+    msg_current(strip,sizeof strip,&sev);VERIFY(sev==SEV_INFO&&g.msg_lines==1&&g.L.msg.top==S(386)&&g.L.body.bottom==S(376));
+    /* Input tab: its status line (error / saved), then its hint, which turns into the unapplied warning */
+    select_tab(TAB_INPUT);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Apply and save disarms first; changes not applied are dropped")&&sev==SEV_INFO);
+    g.cfg.loopback_mode=1;input_tab_load();
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"Gaming PC: virtual input only")&&sev==SEV_INFO);
+    g.pending.loopback_physical=1;msg_current(strip,sizeof strip,&sev);
+    VERIFY(strstr(strip,"Programs that read Raw Input")&&strstr(strip,"The pointer stays native")&&sev==SEV_INFO);
+    g.input_dirty=1;msg_current(strip,sizeof strip,&sev);
+    VERIFY(strstr(strip,"Changes not applied yet")&&strstr(strip,"Raw Input")&&sev==SEV_WARN);
+    g.pending.loopback_physical=0;msg_current(strip,sizeof strip,&sev);
+    VERIFY(!strcmp(strip,"Changes not applied yet. Apply and save disarms first, then saves.")&&sev==SEV_WARN);
+    /* the Gaming PC hint needs three lines: it ends in an ellipsis in the strip and
+     * its whole text is the strip's tooltip; messages that fit have no tooltip */
+    {
+        char tip[256];
+        g.cfg.loopback_mode=1;input_tab_load();
+        VERIFY(msg_tip_text(tip,sizeof tip)&&strstr(tip,"Gaming PC: virtual input only")&&strstr(tip,"dropped when you leave this tab."));
+        g.cfg.loopback_mode=0;input_tab_load();
+        VERIFY(!msg_tip_text(tip,sizeof tip)&&!tip[0]);
+        select_tab(TAB_CONTROL);
+        VERIFY(!msg_tip_text(tip,sizeof tip));
+        select_tab(TAB_INPUT);
+    }
+    g.cfg.loopback_mode=0;input_tab_load();
+    input_status("Settings not saved: clicks/sec must be 1 to 25.",1);
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"clicks/sec")&&sev==SEV_ERR);
+    input_status("Saved. Press ARM when ready.",0);
+    msg_current(strip,sizeof strip,&sev);VERIFY(!strcmp(strip,"Saved. Press ARM when ready.")&&sev==SEV_OK);
+    select_tab(TAB_CONTROL);select_tab(TAB_INPUT); /* entering the tab clears it, as before */
+    msg_current(strip,sizeof strip,&sev);VERIFY(strstr(strip,"changes not applied are dropped"));
+    select_tab(TAB_CONTROL);
+
+    /* The strip paints each severity with its own glyph, bar and fill. */
+    {
+        static const struct { int sev; COLORREF bar, bg; } looks[]={
+            {SEV_INFO,W_LINE2,W_SURF},{SEV_OK,W_GREEN,W_SURF},{SEV_WARN,W_AMBER,W_MSG_WARN_BG},{SEV_ERR,W_RED,W_MSG_ERR_BG}};
+        for(UINT dpi=96;dpi<=192;dpi+=48)for(int i=0;i<4;i++) {
+            g.dpi=dpi;create_fonts();compute_layout();apply_layout();
+            if(looks[i].sev==SEV_INFO)g.local_pico_notice[0]=0;else pico_notice("A message.",looks[i].sev);
+            select_tab(TAB_CONTROL);msg_sync();
+            HDC mdc;HBITMAP bm=paint_bitmap(&mdc);
+            int cy=(g.L.msg.top+g.L.msg.bottom)/2;
+            VERIFY(GetPixel(mdc,g.L.msg.left+S(1),cy)==looks[i].bar);
+            VERIFY(GetPixel(mdc,g.L.msg.right-S(4),cy)==looks[i].bg);
+            /* the glyph is in the strip: some pixel of it differs from the fill */
+            int glyph_px=0;
+            for(int x=g.L.msg.left+S(11);x<g.L.msg.left+S(30);x++)for(int y=cy-S(7);y<cy+S(7);y++)
+                if(GetPixel(mdc,x,y)!=looks[i].bg)glyph_px++;
+            VERIFY(glyph_px>=S(8));
+            free_bitmap(mdc,bm);
+            if(dpi==96){char name[32];snprintf(name,sizeof name,"strip-%d-control-96",looks[i].sev);test_shot(name);}
+        }
+        g.local_pico_notice[0]=0;g.dpi=96;create_fonts();compute_layout();apply_layout();msg_sync();
+    }
+
+    /* The recent-input list gets exactly what it got before. */
+    ui_state();g.preview=0;select_tab(TAB_CONNECTION);
+    SendMessageA(g.history,LB_RESETCONTENT,0,0);
+    SetWindowTextA(g.edit[2],"500");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    {
+        char row[160];
+        VERIFY(SendMessageA(g.history,LB_GETCOUNT,0,0)==1&&SendMessageA(g.history,LB_GETTEXT,0,(LPARAM)row)>0&&strstr(row,"\x1f" "Settings saved\x1f" "i"));
+        SetWindowTextA(g.edit[2],"5");
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save); /* refused: no history line */
+        VERIFY(SendMessageA(g.history,LB_GETCOUNT,0,0)==1&&g.conn_error);
+        test_shot("err-connection-96");
+        select_tab(TAB_INPUT);
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_CB_MOUSE,BN_CLICKED),(LPARAM)g.cb[1]);
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+        VERIFY(SendMessageA(g.history,LB_GETCOUNT,0,0)==2&&SendMessageA(g.history,LB_GETTEXT,0,(LPARAM)row)>0&&
+               strstr(row,"\x1f" "Input settings saved - arm when ready\x1f" "i"));
+    }
+    g.preview=1;g.conn_status[0]=0;g.input_status[0]=0;
+
+    /* State block: DISARMED (1 px border) and ARMED (2 px green border, green fill),
+     * the timer drawn in it; and the Input tab's amber dot while edits are not applied. */
+    for(UINT dpi=96;dpi<=192;dpi+=48) {
+        g.dpi=dpi;create_fonts();compute_layout();apply_layout();ui_state();
+        RECT s=g.L.state;int mid=(s.top+s.bottom)/2;
+        HDC mdc;HBITMAP bm=paint_bitmap(&mdc);
+        VERIFY(GetPixel(mdc,s.left,mid)==W_LINE2&&GetPixel(mdc,s.left+S(60),s.top+S(4))==W_SURF);
+        free_bitmap(mdc,bm);
+        g.armed=1;g.armed_at_ms=timeGetTime()-83000;bm=paint_bitmap(&mdc);
+        VERIFY(GetPixel(mdc,s.left,mid)==W_GREEN&&GetPixel(mdc,s.left+S(1),mid)==W_GREEN&&
+               GetPixel(mdc,s.left+S(60),s.top+S(4))==W_GREEN_F);
+        free_bitmap(mdc,bm);
+        g.armed=0;
+        select_tab(TAB_INPUT);
+        RECT rc[TAB_COUNT];POINT dp;HDC tdc=GetDC(g.tabs);
+        g.input_dirty=1;tabs_layout(tdc,rc,&dp);ReleaseDC(g.tabs,tdc);
+        for(int dirty=1;dirty>=0;dirty--) {
+            g.input_dirty=dirty;
+            HDC sdc=GetDC(NULL),mdc2=CreateCompatibleDC(sdc);
+            RECT cr;GetClientRect(g.tabs,&cr);
+            HBITMAP tb=CreateCompatibleBitmap(sdc,cr.right,cr.bottom);HGDIOBJ old=SelectObject(mdc2,tb);
+            SendMessageA(g.tabs,WM_PRINTCLIENT,(WPARAM)mdc2,PRF_CLIENT);
+            VERIFY((GetPixel(mdc2,dp.x,dp.y)==W_AMBER)==(dirty!=0));
+            if(dirty) { /* it widens the Input tab by its own width */
+                HDC mdc3=GetDC(g.tabs);RECT r1[TAB_COUNT],r0[TAB_COUNT];POINT d2;
+                tabs_layout(mdc3,r1,&d2);g.input_dirty=0;tabs_layout(mdc3,r0,&d2);g.input_dirty=1;ReleaseDC(g.tabs,mdc3);
+                VERIFY(r1[TAB_INPUT].right-r0[TAB_INPUT].right==S(12)&&r1[TAB_INPUT].left==r0[TAB_INPUT].left);
+            }
+            SelectObject(mdc2,old);DeleteObject(tb);DeleteDC(mdc2);ReleaseDC(NULL,sdc);
+        }
+        g.input_dirty=0;
+        /* a dirty flag from a click shows on the strip within a timer tick */
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_CB_MOUSE,BN_CLICKED),(LPARAM)g.cb[1]);
+        VERIFY(g.input_dirty);
+        select_tab(TAB_CONTROL);
+    }
+    g.dpi=96;create_fonts();ui_state();compute_layout();apply_layout();
+    /* review shots: a two-line message, the banner and a long message together, edits not applied */
+    pico_notice(two_line_notice,SEV_WARN);select_tab(TAB_CONTROL);msg_sync();test_shot("twoline-control-96");
+    g.update_offer=1;strcpy(g.update_tag,"v0.6.1");banner_sync();msg_sync();test_shot("twoline-banner-control-96");
+    g.cfg.loopback_mode=1;g.cfg.loopback_physical=1;select_tab(TAB_CONNECTION);select_tab(TAB_INPUT);msg_sync();
+    test_shot("twoline-banner-input-gaming-physical-96");
+    g.update_offer=2;banner_sync();ui_state();
+    select_tab(TAB_INPUT);input_status("Settings not saved: the repeat source includes a source that is not ticked under Sources.",1);
+    msg_sync();test_shot("err-input-96");
+    input_status(NULL,0);g.input_dirty=1;g.tab_dirty_drawn=0;msg_sync();test_shot("dirty-input-96");
+    ui_state();
+    test_shot("control-96");
+    g.armed=1;g.armed_at_ms=timeGetTime()-83000;g.status_seen=1;test_shot("control-armed-96");g.armed=0;g.status_seen=0;
+    /* the old geometry tests' WAKE: the tile that offers it is wide enough */
+    VERIFY(g.L.tiles[3].right-g.L.tiles[3].left>=S(140)&&g.L.tiles[3].right<=g.L.body.right);
 
     /* ---- Input tab: greying, unapplied edits, validation, apply ---- */
     ui_state();g.cfg.repeat_enabled=0;g.cfg.repeat_button=2;g.cfg.repeat_cps=12;g.cfg.repeat_sources=4;
@@ -807,6 +1397,7 @@ int main(void)
         VERIFY(g.armed&&output_count==0&&g.conn_error&&strstr(g.conn_status,"not saved")&&
                strstr(g.conn_status,bad_fields[i].message)&&!memcmp(&before,&g.cfg,sizeof before)&&
                !fixture_saves&&!g.saved_flash);
+        VERIFY(g.conn_bad==bad_fields[i].field+1); /* the refused field is marked */
     }
     /* Range ends are accepted (spaces around a number too); Save disarms. */
     connection_fields_load();
@@ -835,7 +1426,7 @@ int main(void)
         RECT all={0,0,g.L.W,g.L.H};paint_content(mdc,all);
         SelectObject(mdc,ob);DeleteObject(bm);DeleteDC(mdc);ReleaseDC(NULL,sdc);
     }
-    connection_fields_load();VERIFY(!g.conn_status[0]); /* reloaded fields: hint again */
+    connection_fields_load();VERIFY(!g.conn_status[0]&&!g.conn_bad); /* reloaded fields: hint again */
 
     /* ---- Route profiles: switching stores the route left, restores the
      * other route's own values, applies and saves. ---- */
@@ -1087,24 +1678,26 @@ int main(void)
         wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_UPDATE_NOW,BN_CLICKED),(LPARAM)g.update_now);
         VERIFY(fixture_launches==2); /* a dismissed banner starts nothing */
 
-        /* Banner geometry at 96/144/192 DPI: inside the header, clear of the
-         * mark, the state pill, the tab strip and the action row; its text
-         * and button labels fit. */
+        /* Banner geometry at 96/144/192 DPI (the combinations are covered by the
+         * layout cases above): the blue bar under the tab strip, clear of the rail,
+         * the tab strip and the body, its text and button labels inside it. */
         HDC dc=GetDC(g.hwnd);
+        g.update_offer=1;
         for(UINT dpi=96;dpi<=192;dpi+=48) {
             g.dpi=dpi;create_fonts();compute_layout();
             RECT x;
-            VERIFY(g.L.banner.left>=g.L.mark.right&&g.L.banner.right<=g.L.pill.left-S(6)&&g.L.banner.bottom<=g.L.tabs.top);
-            VERIFY(!IntersectRect(&x,&g.L.banner,&g.L.pill)&&!IntersectRect(&x,&g.L.banner,&g.L.tabs)&&
-                   !IntersectRect(&x,&g.L.banner,&g.L.arm)&&!IntersectRect(&x,&g.L.banner,&g.L.panic));
+            VERIFY(banner_visible()&&g.L.banner.left>=g.L.page.left&&g.L.banner.right<=g.L.page.right&&g.L.banner.bottom<=g.L.body.top);
+            VERIFY(!IntersectRect(&x,&g.L.banner,&g.L.tabs)&&!IntersectRect(&x,&g.L.banner,&g.L.rail)&&
+                   !IntersectRect(&x,&g.L.banner,&g.L.body)&&!IntersectRect(&x,&g.L.banner,&g.L.msg));
             VERIFY(g.L.banner_now.left>g.L.banner.left&&g.L.banner_now.right<g.L.banner_later.left&&
-                   g.L.banner_later.right==g.L.banner.right&&g.L.banner_now.top==g.L.banner.top);
-            VERIFY(text_w(dc,g.f_label,"HIDway v0.6.1 is available")<=g.L.banner_now.left-S(8)-g.L.banner.left);
-            VERIFY(text_w(dc,g.f_label,"The updater did not start")<=g.L.banner_now.left-S(8)-g.L.banner.left);
+                   g.L.banner_later.right<=g.L.banner.right&&g.L.banner_now.top==g.L.banner_later.top);
+            VERIFY(text_w(dc,g.f_btn,"HIDway v0.6.1 is available")<=g.L.banner_now.left-S(8)-(g.L.banner.left+S(35)));
+            VERIFY(text_w(dc,g.f_btn,"The updater did not start")<=g.L.banner_now.left-S(8)-(g.L.banner.left+S(35)));
             VERIFY(text_w(dc,g.f_chip,"Update now")+S(10)<=g.L.banner_now.right-g.L.banner_now.left&&
                    text_w(dc,g.f_chip,"Later")+S(10)<=g.L.banner_later.right-g.L.banner_later.left);
             VERIFY(font_h(dc,g.f_chip)<=g.L.banner_now.bottom-g.L.banner_now.top);
         }
+        g.update_offer=2;
         ReleaseDC(g.hwnd,dc);
         g.dpi=96;create_fonts();compute_layout();apply_layout();
 
@@ -1129,6 +1722,7 @@ int main(void)
     }
 
     DestroyWindow(g.hwnd);g.hwnd=NULL;destroy_fonts();
+    GdiplusShutdown(gdip_token);
     printf("Client regression tests: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }
