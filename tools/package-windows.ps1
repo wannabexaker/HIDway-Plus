@@ -10,6 +10,7 @@ foreach($item in @(@('client','hidway-client.exe'),@('client','hidway-probe.exe'
     Copy-Item -LiteralPath $path -Destination $stage
 }
 Copy-Item (Join-Path $root 'tools\setup\*.ps1') $stage
+Copy-Item (Join-Path $root 'tools\setup\hidway-updater.psm1') $stage
 Copy-Item -LiteralPath (Join-Path $root 'tools\setup\Setup.cmd'),(Join-Path $root 'tools\input-monitor\Start-Input-Monitor.cmd'),(Join-Path $root 'client\hidway.ini.example'),(Join-Path $root 'LICENSE'),(Join-Path $root 'README.md'),(Join-Path $root 'SECURITY.md'),(Join-Path $root 'docs\INPUT_MONITOR.md') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'relay\deploy\install.sh') -Destination (Join-Path $stage 'relay-install.sh')
 Copy-Item (Join-Path $root 'docs\*.md') (Join-Path $stage 'docs')

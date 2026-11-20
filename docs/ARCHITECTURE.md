@@ -204,6 +204,17 @@ shortcuts and uninstall registration. The Pi step delegates interactive SSH and
 sudo to the system OpenSSH client; Pico installation validates the BOOTSEL family
 before copying the selected packaged UF2. No Windows driver is installed.
 
+`common/hidway_companion_win.c` resolves fixed sibling executables and verifies
+the path of an existing companion before restoring its window. Both native tools
+can open each other and the shared `HIDway-Setup.exe --updates` entry point.
+The dark WPF updater runs public GitHub checks/downloads on a worker runspace,
+leaving the UI responsive. It validates release metadata, outer digest, bounded
+ZIP paths and the existing allowlisted payload manifest before delegating to
+the same staged Windows installer. Applying is manual and blocked while either
+input tool is running. The updater is separate from capture, recording and the
+network input path; it never enables ARM or updates the Pi/Pico automatically.
+See [updates](UPDATES.md) for the release contract and trust boundary.
+
 ## Practical boundaries
 
 In Gaming PC mode the default pointer policy lets remote movement pass natively

@@ -15,6 +15,7 @@ if (($# != 4)); then
     exit 2
 fi
 version=$1
+[[ $version =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid package version" >&2; exit 2; }
 win=$2
 fw=$3
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -38,6 +39,8 @@ cp "$root/tools/setup/Setup.cmd" "$root/tools/setup/hidway-setup.ps1" \
     "$root/client/hidway.ini.example" "$root/LICENSE" "$root/README.md" "$stage/"
 cp "$root/tools/setup/hidway-setup-gui.ps1" "$root/tools/setup/hidway-setup-core.ps1" \
     "$root/tools/setup/hidway-uninstall.ps1" "$root/tools/setup/hidway-pi-setup.ps1" "$stage/"
+cp "$root/tools/setup/hidway-updates.ps1" "$root/tools/setup/hidway-update-core.ps1" "$stage/"
+cp "$root/tools/setup/hidway-updater.psm1" "$stage/"
 cp "$root/relay/deploy/install.sh" "$stage/relay-install.sh"
 shopt -s nullglob
 uf2=("$fw"/hidway_fw_*.uf2)

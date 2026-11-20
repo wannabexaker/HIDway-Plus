@@ -8,6 +8,11 @@ operation are independent of the monitor.
 
 The native interface uses HIDway's dark palette for the window, device table,
 selection, fields, dropdowns and buttons; it resizes and scales with Windows DPI.
+The header's **HIDway** button opens the installed sibling client or brings its
+existing window forward. HIDway's **Monitor** button provides the reverse path.
+**Check for updates** opens a separate update window for the paired Windows
+package; it does not start ARM, stop a recording or replace running tools.
+See [updates](UPDATES.md).
 
 The device list uses Windows Raw Input identities and device-tree metadata.
 Select a row to see its Windows name, connection, driver, identity and counters.

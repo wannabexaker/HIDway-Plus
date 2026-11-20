@@ -2,6 +2,7 @@
 #include "observer.h"
 #include "theme.h"
 #include "recording.h"
+#include "hidway_companion_win.h"
 #include <commdlg.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -11,7 +12,8 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <string.h>
-enum { ID_LIST=100,ID_PAUSE,ID_RESET,ID_REFRESH,ID_IDENTIFY,ID_BACKGROUND,ID_OBSERVER,ID_NAME,ID_SOURCE,ID_SAVE,ID_RECORD,ID_STOP,ID_REPLAY,ID_SCOPE,ID_FOLDER };
+enum { ID_LIST=100,ID_PAUSE,ID_RESET,ID_REFRESH,ID_IDENTIFY,ID_BACKGROUND,ID_OBSERVER,ID_NAME,ID_SOURCE,ID_SAVE,ID_RECORD,ID_STOP,ID_REPLAY,ID_SCOPE,ID_FOLDER,ID_CLIENT,ID_UPDATES };
+static HWND client_button,updates_button;
 static HWND record_button,stop_button,replay_button,scope_combo,folder_button,event_text;
 static ULONGLONG record_started;static int recording,closing,record_scope,record_device;
 static int record_limit,record_error,observer_for_record;
@@ -99,7 +101,8 @@ static HWND control(const wchar_t *cls,const wchar_t *text,DWORD style,int id)
 static void layout(void)
 {
     if(!list)return;RECT r;GetClientRect(window,&r);int w=r.right,h=r.bottom,p=px(24),gap=px(8),bh=px(32);
-    move(title,p,px(16),w-2*p,px(36));move(subtitle,p,px(56),w-2*p,px(24));
+    move(title,p,px(16),w-2*p-px(260),px(36));move(subtitle,p,px(56),w-2*p,px(24));
+    move(client_button,w-p-px(252),px(20),px(96),bh);move(updates_button,w-p-px(148),px(20),px(148),bh);
     int x=p;move(pause_button,x,px(88),px(88),bh);x+=px(88)+gap;
     move(reset_button,x,px(88),px(112),bh);x+=px(112)+gap;
     move(refresh_button,x,px(88),px(136),bh);x+=px(136)+gap;
@@ -349,6 +352,8 @@ static void write_report(void)
 static void create_controls(void)
 {
     title=control(L"STATIC",L"HIDway  /  Input monitor",0,0);
+    client_button=control(L"BUTTON",L"HIDway",BS_PUSHBUTTON|WS_TABSTOP,ID_CLIENT);
+    updates_button=control(L"BUTTON",L"Check for updates",BS_PUSHBUTTON|WS_TABSTOP,ID_UPDATES);
     subtitle=control(L"STATIC",L"Know your devices. Compare presses and releases. Keep names between sessions.",0,0);
     pause_button=control(L"BUTTON",L"Pause",BS_PUSHBUTTON|WS_TABSTOP,ID_PAUSE);
     reset_button=control(L"BUTTON",L"Reset counts",BS_PUSHBUTTON|WS_TABSTOP,ID_RESET);
@@ -419,6 +424,10 @@ static LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l)
     }
     case WM_COMMAND:
         switch(LOWORD(w)) {
+        case ID_CLIENT:case ID_UPDATES:
+            if(!ui_preview){int result=hw_companion_open(window,LOWORD(w)==ID_CLIENT?HW_COMPANION_CLIENT:HW_COMPANION_UPDATES);
+                if(result!=HW_COMPANION_OK)set_note(hw_companion_error(result));}
+            break;
         case ID_RECORD:start_recording();break;
         case ID_STOP:stop_recording();break;
         case ID_REPLAY:open_replay();break;

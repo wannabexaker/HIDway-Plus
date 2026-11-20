@@ -14,7 +14,9 @@ Accept the MIT license. Choose an installation folder; the default is
 are installed together. Choose Remote PC for the sending laptop, or Gaming PC
 for remote virtual input returning through a Pico connected to this same PC.
 These route choices initialize a new configuration; an existing configuration
-is retained. The Start menu contains HIDway, Input Monitor and Setup guide.
+is retained. An existing per-user installation is detected so its folder and
+saved PC role are selected. The Start menu contains HIDway, Input Monitor,
+Setup guide and Check for updates.
 An optional desktop shortcut and an Installed apps uninstall entry are provided.
 
 **Remote PC** means the sending laptop/PC. **Gaming PC** means the computer with
@@ -26,7 +28,8 @@ For the confirmed AION2 same-PC setup, the game was elevated: HIDway also needed
 an explicitly approved **Run as administrator** launch on the Gaming PC. Accept
 the normal Windows UAC prompt yourself. This is a per-launch requirement, not a
 change to UAC or an automatic elevated startup. After launch, verify the Pi relay,
-choose **Use Pico on this PC**, and enable ARM when ready. Keep laptop HIDway
+click **Pico on this PC** beside ARM, and enable ARM when ready. The same preset
+is available inside Input options as **Use Pico on this PC**. Keep laptop HIDway
 closed for this route. Laptop Moonlight should use relative/game mouse mode;
 its **Optimize mouse for remote desktop instead of games** option should be off.
 The corrected setup was confirmed by the user; see [validation](VALIDATION.md).
@@ -100,7 +103,9 @@ sources. Open a blank test window on the target with Input Monitor. ARM and
 test each button/key, movement, wheel rotation and horizontal scrolling separately.
 `Ctrl+Shift+F12` toggles ARM; `Ctrl+Alt+Shift+End` is the default PANIC.
 
-The **Monitor** button launches the companion. For a single-person test, choose
+The **Monitor** button launches the companion; its **HIDway** button opens the
+client again. An existing instance from the same folder is brought forward.
+For a single-person test, choose
 a recording scope, **Record**, enter a new filename, perform a short sequence,
 then **F9** (or **Stop / Save**). F9 avoids recording a toolbar click.
 **Replay in HIDway** loads the file; click **Replay** in
@@ -110,7 +115,12 @@ See [recording limitations](INPUT_MONITOR.md) before comparing timing/coordinate
 
 ## Update, uninstall and build
 
-Run the new extracted package's wizard to update the same folder. Uninstall via
+Use **Updates** in HIDway or **Check for updates** in Monitor/the Start menu.
+Check, download and verify the complete stable release; then save any recording,
+DISARM and close both apps before **Install both apps**. No input session is
+terminated automatically. See [Windows updates](UPDATES.md) for release availability,
+preview versions and trust limits. You can also run the new extracted package's
+wizard to update the detected installation folder. Uninstall via
 Windows Installed apps. Local configuration, labels and recordings remain.
 Recorded key identities can reveal typed information; choose a private output
 folder and avoid passwords. Recordings are never included in the release.

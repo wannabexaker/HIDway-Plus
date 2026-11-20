@@ -81,7 +81,7 @@ public static class HidwaySetupChrome {
    </StackPanel>
   </Grid></ScrollViewer>
   <TextBlock x:Name="Status" Grid.Row="3" Foreground="#D6A038" Margin="0,16,0,12"/>
-  <DockPanel Grid.Row="4"><Button x:Name="Cancel" Content="Close" DockPanel.Dock="Left"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="Back" Content="Back"/><Button x:Name="Next" Content="Next" Background="#5F636B"/></StackPanel></DockPanel>
+  <DockPanel Grid.Row="4"><StackPanel Orientation="Horizontal" DockPanel.Dock="Left"><Button x:Name="Cancel" Content="Close"/><Button x:Name="Updates" Content="Check for updates"/></StackPanel><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="Back" Content="Back"/><Button x:Name="Next" Content="Next" Background="#5F636B"/></StackPanel></DockPanel>
  </Grid>
 </Window>
 '@
@@ -99,6 +99,12 @@ $window.Add_SourceInitialized({$handle=(New-Object Windows.Interop.WindowInterop
 $ui=@{}
 foreach ($element in $xaml.SelectNodes('//*')) { $name=$element.GetAttribute('Name','http://schemas.microsoft.com/winfx/2006/xaml');if($name){$found=$window.FindName($name);if($found){$ui[$name]=$found}} }
 $ui.Folder.Text=Join-Path $env:LOCALAPPDATA 'Programs\HIDway'
+$existingFolder=Get-HidwayInstallationFolder
+if($existingFolder){
+    $ui.Folder.Text=$existingFolder
+    $existingIni=Join-Path $existingFolder 'hidway.ini'
+    if((Test-Path -LiteralPath $existingIni) -and [IO.File]::ReadAllText($existingIni) -match '(?m)^loopback_mode\s*=\s*1\s*$'){$ui.Gaming.IsChecked=$true}
+}
 $ui.License.Text=if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LICENSE')){[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'LICENSE'))}else{'MIT License — see LICENSE in the extracted release package.'}
 $script:step=0;$script:installed='';$script:firstInstall=$false;$script:piOK=$false;$script:flashed=$false;$script:piProcess=$null;$script:result=''
 $pages=@('Welcome','WindowsPage','NetworkPage','PiPage','PicoPage','FinishPage')
@@ -106,7 +112,7 @@ function Show-Page {
     for($i=0;$i -lt $pages.Count;$i++){$ui[$pages[$i]].Visibility=if($i -eq $script:step){'Visible'}else{'Collapsed'}}
     $ui.Steps.Text="Step $($script:step+1) of 6  •  License → Windows → Network → Pi relay → Pico → Test"
     $ui.Back.IsEnabled=$script:step -gt 0 -and -not $script:piProcess
-    $ui.Next.Content=if($script:step -eq 1){'Install and Next'}elseif($script:step -eq 5){'Finish'}else{'Next'}
+    $ui.Next.Content=if($script:step -eq 1){if(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway-client.exe')){'Update and Next'}else{'Install and Next'}}elseif($script:step -eq 5){'Finish'}else{'Next'}
     $ui.Status.Text=''
     $ui.SenderLabel.Text=if($ui.Gaming.IsChecked){'Gaming PC IPv4 (this PC sends virtual input through the relay)'}else{'Remote PC IPv4 (sending laptop / PC allowed by the relay)'}
 }
@@ -119,6 +125,12 @@ function Open-Installed([string]$Name) {
 }
 $ui.Browse.Add_Click({$dialog=New-Object Windows.Forms.FolderBrowserDialog;$dialog.SelectedPath=$ui.Folder.Text;if($dialog.ShowDialog() -eq 'OK'){$ui.Folder.Text=$dialog.SelectedPath};$dialog.Dispose()})
 $ui.Cancel.Add_Click({$window.Close()})
+$ui.Updates.Add_Click({Invoke-UiAction {
+    if($script:piProcess){throw 'Finish the SSH setup terminal before checking updates.'}
+    $launcher=Join-Path $PSScriptRoot 'HIDway-Setup.exe'
+    Start-Process -FilePath $launcher -ArgumentList '--updates' -WorkingDirectory (Split-Path $launcher)
+    $window.Close()
+}})
 $ui.Back.Add_Click({if($script:step -gt 0){$script:step--;Show-Page}})
 $ui.Next.Add_Click({Invoke-UiAction {
     if($script:piProcess){throw 'Finish the SSH installation terminal first.'}

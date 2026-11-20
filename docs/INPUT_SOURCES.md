@@ -1,6 +1,6 @@
 # Input sources and routing
 
-Updated 2026-10-29. The input changes are implemented and covered by host tests.
+Updated 2026-10-30. The input changes are implemented and covered by host tests.
 Actual AnyDesk drivers, target applications and USB hardware still require the
 acceptance checks in [INPUT_TESTING.md](INPUT_TESTING.md). See
 [VALIDATION.md](VALIDATION.md) for deployment and test evidence.
@@ -31,10 +31,17 @@ not identify applications or correlate every possible driver.
 
 Open **Input options** beside Save. Opening it disarms; close it before ARM.
 
-**Use Pico on this PC** is a one-click preset for the Gaming PC with Pico USB
+**Pico on this PC**, beside ARM on the main window, is a one-click preset for
+the Gaming PC with Pico USB
 connected to it. It saves Gaming PC mode, virtual input enabled, native pointer,
 keyboard/mouse output enabled and hold-to-repeat off. Physical/touchpad source
 preferences are retained for returning to Remote PC mode. It never arms.
+The same action remains available as **Use Pico on this PC** in Input options.
+The main button is disabled while ARMED; a queued click cannot stop or change
+an active capture/replay. Unsaved relay address/port edits must be saved first.
+Success or a missing-device/address/save error appears in the Live Input card,
+including when input history is disabled. After selecting the preset, press ARM
+when ready. The button does not enable physical/touchpad recapture on this PC.
 The configured Pi relay address, port and key stay unchanged: virtual keys,
 buttons and wheels travel from this PC through Pi → UART → Pico → this PC's USB.
 Pointer position stays native. The Pi must allow this PC as a client.

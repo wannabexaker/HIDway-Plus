@@ -16,6 +16,7 @@ add_custom_target(hidway_version
 
 add_executable(hidway-client WIN32
     src/main.c
+    ${HIDWAY_COMMON}/hidway_companion_win.c
     src/local_pico.c
     src/config.c
     src/net.c
@@ -39,6 +40,7 @@ add_executable(hidway-probe
 
 add_executable(hidway-client-tests
     ../tests/test_client_win.c
+    ${HIDWAY_COMMON}/hidway_companion_win.c
     src/local_pico.c
     src/config.c src/net.c
     src/send_clock.c
@@ -56,6 +58,12 @@ target_compile_definitions(hidway-platform-tests PRIVATE _CRT_SECURE_NO_WARNINGS
 target_compile_options(hidway-platform-tests PRIVATE $<$<BOOL:${MSVC}>:/W4> $<$<BOOL:${MSVC}>:/WX>)
 target_link_libraries(hidway-platform-tests PRIVATE user32)
 add_test(NAME hidway_platform COMMAND hidway-platform-tests "${CMAKE_CURRENT_BINARY_DIR}")
+add_executable(hidway-companion-tests ../tests/test_companion_win.c)
+target_include_directories(hidway-companion-tests PRIVATE ${HIDWAY_COMMON})
+target_link_libraries(hidway-companion-tests PRIVATE user32 shell32)
+target_compile_definitions(hidway-companion-tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(hidway-companion-tests PRIVATE $<$<BOOL:${MSVC}>:/W4> $<$<BOOL:${MSVC}>:/WX>)
+add_test(NAME hidway_companion COMMAND hidway-companion-tests)
 
 foreach (t hidway-client hidway-probe hidway-client-tests)
     add_dependencies(${t} hidway_version)

@@ -368,6 +368,57 @@ int main(void)
     VERIFY(g.cfg.source_physical&&g.cfg.source_touchpad&&input_source_mask()==HIDWAY_SOURCE_VIRTUAL);
     VERIFY(g.cfg.relay_keyboard&&g.cfg.relay_mouse&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL);
     VERIFY(!strcmp(g.cfg.target,"192.0.2.10")&&g.cfg.port==47800&&!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg));
+
+    /* The visible HUD button uses the same production preset and does not
+     * ARM, create a capture hook, send packets, or change the relay address. */
+    reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
+    strcpy(g.cfg.target,"192.0.2.10");g.cfg.port=47800;
+    g.cfg.source_touchpad=1;g.cfg.loopback_pointer_pico=1;g.cfg.repeat_enabled=1;
+    before=g.cfg;fixture_saves=0;fixture_peer=0;fixture_pico=HIDWAY_PICO_READY;
+    fixture_save_ok=0;
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&!g.armed&&output_count==0);
+    VERIFY(strstr(g.local_pico_notice,"Could not save")!=NULL);
+    fixture_save_ok=1;fixture_peer=1;
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&strstr(g.local_pico_notice,"Pi relay"));
+    fixture_peer=0;
+    for(unsigned present=0;present<HIDWAY_PICO_READY;present++) {
+        fixture_pico=present;
+        wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+        VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&strstr(g.local_pico_notice,"USB devices"));
+    }
+    fixture_pico=HIDWAY_PICO_READY;
+    /* Editing the address/port is distinct from selecting a saved route. */
+    g.edit[0]=CreateWindowExA(0,"EDIT","192.0.2.20",0,0,0,120,24,NULL,NULL,g.inst,NULL);
+    g.edit[1]=CreateWindowExA(0,"EDIT","47800",0,0,0,120,24,NULL,NULL,g.inst,NULL);
+    VERIFY(g.edit[0]&&g.edit[1]);
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&strstr(g.local_pico_notice,"Settings first"));
+    SetWindowTextA(g.edit[0],g.cfg.target);SetWindowTextA(g.edit[1],"47801");
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1);
+    DestroyWindow(g.edit[0]);DestroyWindow(g.edit[1]);g.edit[0]=g.edit[1]=NULL;
+    /* Even a queued click cannot stop an active input session or replay. */
+    g.armed=1;
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(g.armed&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1&&output_count==0);
+    g.armed=0;replay.active=1;
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(replay.active&&!memcmp(&before,&g.cfg,sizeof before)&&fixture_saves==1);
+    replay.active=0;
+    wnd_proc(NULL,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),0);
+    VERIFY(fixture_saves==2&&!g.armed&&output_count==0&&!cap_active);
+    VERIFY(g.cfg.loopback_mode&&g.cfg.source_virtual&&!g.cfg.loopback_pointer_pico&&!g.cfg.repeat_enabled);
+    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&g.cfg.source_physical&&g.cfg.source_touchpad);
+    VERIFY(g.cfg.relay_keyboard&&g.cfg.relay_mouse&&!strcmp(g.cfg.target,before.target)&&g.cfg.port==before.port);
+    VERIFY(!memcmp(&fixture_saved,&g.cfg,sizeof g.cfg)&&strstr(g.local_pico_notice,"Press ARM"));
+    /* Visible button follows ARM state; the window stays hidden throughout. */
+    g.local_pico_button=CreateWindowExA(0,"BUTTON","Pico on this PC",0,0,0,142,46,NULL,NULL,g.inst,NULL);
+    VERIFY(g.local_pico_button!=NULL);
+    g.preview=1;set_armed(1);VERIFY(!IsWindowEnabled(g.local_pico_button));
+    set_armed(0);VERIFY(IsWindowEnabled(g.local_pico_button));
+    DestroyWindow(g.local_pico_button);g.local_pico_button=NULL;
     VERIFY(hidway_net_peer_is_loopback()==-1);
     VERIFY(hidway_net_open("127.0.0.2",47801)==0&&hidway_net_peer_is_loopback()==1);
     hidway_net_close();

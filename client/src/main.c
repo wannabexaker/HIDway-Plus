@@ -28,6 +28,7 @@
 #include "keymap_sc2hid.h"
 #include "net.h"
 #include "local_pico.h"
+#include "hidway_companion_win.h"
 #include "protocol.h"
 #include "capture_queue.h"
 #include "send_clock.h"
@@ -117,7 +118,7 @@ enum {
     ID_CB_KBD, ID_CB_MOUSE, ID_CB_HIST, ID_SAVE, ID_ARM, ID_PANIC,
     ID_SRC_PHYSICAL, ID_SRC_TOUCHPAD, ID_SRC_VIRTUAL,
     ID_OPTIONS, ID_ROUTE, ID_REPEAT, ID_REPEAT_BUTTON, ID_REPEAT_CPS, ID_REPEAT_SOURCE, ID_CLICK_CPS, ID_POINTER,
-    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO
+    IDM_ARM, IDM_PANIC, IDM_WAKE, IDM_SHOW, IDM_BADGE, IDM_QUIT, ID_MONITOR, ID_REPLAY, ID_LOCAL_PICO, ID_UPDATES
 };
 
 enum { BTN_L = 1, BTN_R = 2, BTN_M = 4, BTN_X1 = 8, BTN_X2 = 16 };
@@ -237,7 +238,8 @@ static struct {
     HWND hwnd;
     HWND history, clear, edit[4], cb[3], src[3], save, arm, panic;
     HWND options,options_button,route,pointer_route,repeat,repeat_button,repeat_cps,repeat_source,click_cps,options_hint;
-    HWND monitor_button,replay_button;
+    HWND monitor_button,replay_button,updates_button,local_pico_button;
+    char local_pico_notice[192];
     int options_repeat;
     HFONT f_title, f_sub, f_section, f_label, f_body, f_pill, f_tile, f_mono, f_mono_s,
           f_btn, f_btn_big, f_chip;
@@ -1494,6 +1496,7 @@ static void set_armed(int on)
         for(unsigned o=0;o<3;o++)for(unsigned i=0;i<5;i++)g.last_limited+=g.pulse[o][i].limited;
     }
     g.armed = on;
+    if(g.local_pico_button)EnableWindow(g.local_pico_button,!on);
     if(!on&&replay.active){replay.active=0;hw_rec_free(&replay.file);memset(&replay.state,0,sizeof replay.state);if(g.replay_button)SetWindowTextA(g.replay_button,"Replay...");}
     g.prev_link_up = 0;
     clear_relay_state();
@@ -1951,7 +1954,7 @@ static void compute_layout(void)
     L->hk_cy = S(606);
 
     /* action bar */
-    L->arm = R(P, 642, W - P - 8 - 150, 688);
+    L->arm = R(P, 642, 194, 688);
     L->panic = R(W - P - 150, 642, W - P, 688);
 
     L->H = S(706);
@@ -1975,7 +1978,9 @@ static void apply_layout(void)
     place(g.save, L->save);
     place(g.options_button,R(300,442,414,466));
     place(g.monitor_button,R(132,442,212,466));
+    place(g.updates_button,R(282,16,356,38));
     place(g.replay_button,R(220,442,292,466));
+    place(g.local_pico_button,R(202,642,344,688));
     place(g.arm, L->arm);
     place(g.panic, L->panic);
     for (int i = 0; i < 3; i++)
@@ -2082,8 +2087,9 @@ static void paint_header(HDC dc)
                    L->mark.bottom - L->mark.top, 0, NULL, DI_NORMAL);
     text_at(dc, g.f_title, C_TEXT, L->title_x, L->title_y, "HIDway");
     /* the version on the title's baseline */
-    text_at(dc, g.f_label, C_TEXT3, L->title_x + text_w(dc, g.f_title, "HIDway") + S(8),
-            L->title_y + font_ascent(dc, g.f_title) - font_ascent(dc, g.f_label), HIDWAY_VERSION);
+    RECT version={L->title_x + text_w(dc,g.f_title,"HIDway")+S(8),
+        L->title_y + font_ascent(dc,g.f_title)-font_ascent(dc,g.f_label),S(274),S(38)};
+    text_in(dc,g.f_label,C_TEXT3,version,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS,HIDWAY_VERSION);
     text_at(dc, g.f_sub, C_TEXT3, L->title_x, L->sub_y, "Remote keyboard & mouse over real USB HID");
 
     RECT p = L->pill;
@@ -2212,6 +2218,11 @@ static void paint_live(HDC dc)
     text_vc(dc, g.f_label, C_TEXT3, c.right - S(14) - mw, title_cy(c), mode);
 
     if (!g.armed) {
+        if(g.local_pico_notice[0]) {
+            RECT note={c.left+S(14),c.top+S(35),c.right-S(14),c.bottom-S(6)};
+            text_in(dc,g.f_label,C_TEXT2,note,DT_CENTER|DT_WORDBREAK,g.local_pico_notice);
+            return;
+        }
         char hk[48], hint[96];
         hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
         snprintf(hint, sizeof hint, "Press ARM or %s to start relaying", hk);
@@ -2386,7 +2397,8 @@ static void draw_button(const DRAWITEMSTRUCT *d)
     bool focus = (d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT);
 
     /* paint what is behind the control first: no default-grey corners */
-    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC) ? C_BG : C_CARD);
+    fill_solid(dc, lr, (id == ID_ARM || id == ID_PANIC || id == ID_UPDATES ||
+                       (id == ID_LOCAL_PICO && d->hwndItem == g.local_pico_button)) ? C_BG : C_CARD);
 
     char label[32];
     GetWindowTextA(d->hwndItem, label, sizeof label);
@@ -2438,6 +2450,8 @@ static void draw_button(const DRAWITEMSTRUCT *d)
             tx = hot ? C_WHITE : C_TEXT;
             if (id == ID_SAVE && g.saved_flash)
                 strcpy(label, "Saved ✓");
+            if(id==ID_LOCAL_PICO&&g.cfg.loopback_mode)bd=C_LIVE_BD;
+            if(d->itemState&ODS_DISABLED)tx=C_TEXT3;
         }
         round_rect(dc, lr, rad, fill, bd);
         if (focus) {
@@ -2614,6 +2628,7 @@ static void refresh_source_controls(void)
     if(g.src[0])EnableWindow(g.src[0],!g.cfg.loopback_mode);
     if(g.src[1])EnableWindow(g.src[1],!g.cfg.loopback_mode);
     if(g.options_button)SetWindowTextA(g.options_button,g.cfg.loopback_mode?"Gaming PC":"Remote PC");
+    if(g.local_pico_button)InvalidateRect(g.local_pico_button,NULL,FALSE);
     for(int i=0;i<3;i++)if(g.src[i])InvalidateRect(g.src[i],NULL,FALSE);
 }
 static const int repeat_source_masks[7]={1,2,4,3,5,6,7};
@@ -2649,18 +2664,56 @@ static void option_route_refresh(void)
 }
 static void options_error(HWND h,const char *message)
 {
-    SetWindowTextA(h,"Input options - settings not saved");
-    SetWindowTextA(g.options_hint,message);
+    if(h){SetWindowTextA(h,"Input options - settings not saved");SetWindowTextA(g.options_hint,message);}
+    else{snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",message);invalidate_readouts();}
 }
-static void options_commit(HWND h,const hidway_config_t *next)
+static int options_commit(HWND h,const hidway_config_t *next)
 {
     if(g.armed)set_armed(0);
     if(!g.preview&&!hidway_config_save("hidway.ini",next)) {
-        options_error(h,"Could not save hidway.ini. Settings have not changed.");return;
+        options_error(h,"Could not save hidway.ini. Settings have not changed.");return 0;
     }
     g.cfg=*next;
+    g.local_pico_notice[0]=0;
     refresh_source_controls();
-    history_add('i',"Input options saved - arm when ready");DestroyWindow(h);
+    history_add('i',"Input options saved - arm when ready");
+    invalidate_readouts();
+    if(h)DestroyWindow(h);
+    return 1;
+}
+static void use_local_pico(HWND options)
+{
+    /* A main-window click must not end or reconfigure an active capture/replay. */
+    if(g.armed||replay.active||(!options&&g.options)) {
+        options_error(options,"DISARM and close Input options before selecting Pico on this PC.");return;
+    }
+    char target[128],port[24],expected_port[24];
+    if(g.edit[0]) {
+        GetWindowTextA(g.edit[0],target,sizeof target);
+        GetWindowTextA(g.edit[1],port,sizeof port);
+        snprintf(expected_port,sizeof expected_port,"%d",g.cfg.port);
+        if(strcmp(target,g.cfg.target)||strcmp(port,expected_port)) {
+            options_error(options,"Save the Pi relay address and port in Settings first.");return;
+        }
+    }
+    if(!g.net_ok||hidway_net_peer_is_loopback()!=0) {
+        options_error(options,"Save the Pi relay address in Settings first.\r\n"
+            "127.0.0.1 / localhost cannot forward USB HID through the Pi.");return;
+    }
+    if(hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
+        options_error(options,"Pico keyboard and mouse USB devices were not both found here.\r\n"
+            "Use this button on the Gaming PC with Pico USB connected.");return;
+    }
+    hidway_config_t next=g.cfg;
+    next.loopback_mode=1;next.loopback_pointer_pico=0;
+    next.source_virtual=1;next.relay_keyboard=next.relay_mouse=1;
+    next.repeat_enabled=0;next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
+    if(options_commit(options,&next)) {
+        snprintf(g.local_pico_notice,sizeof g.local_pico_notice,
+            "Pico on this PC: virtual keys, clicks and wheels -> USB HID.\r\n"
+            "Pointer stays native. Press ARM when ready.");
+        invalidate_readouts();
+    }
 }
 static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
 {
@@ -2714,19 +2767,7 @@ static LRESULT CALLBACK options_proc(HWND h,UINT msg,WPARAM w,LPARAM l)
         SetBkColor((HDC)w,C_FIELD);SetTextColor((HDC)w,C_TEXT);return (LRESULT)g.b_field;
     case WM_COMMAND:
         if(LOWORD(w)==ID_LOCAL_PICO&&HIWORD(w)==BN_CLICKED) {
-            if(!g.net_ok||hidway_net_peer_is_loopback()!=0) {
-                options_error(h,"Save the Pi relay address in the main window first.\r\n"
-                    "127.0.0.1 / localhost cannot forward USB HID through the Pi.");return 0;
-            }
-            if(hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
-                options_error(h,"Pico keyboard and mouse USB devices were not both found here.\r\n"
-                    "Use this preset on the Gaming PC with Pico USB connected.");return 0;
-            }
-            hidway_config_t next=g.cfg;
-            next.loopback_mode=1;next.loopback_pointer_pico=0;
-            next.source_virtual=1;next.relay_keyboard=next.relay_mouse=1;
-            next.repeat_enabled=0;next.repeat_sources=HIDWAY_SOURCE_VIRTUAL;
-            options_commit(h,&next);return 0;
+            use_local_pico(h);return 0;
         }
         if(LOWORD(w)==ID_ROUTE&&HIWORD(w)==CBN_SELCHANGE){option_route_refresh();return 0;}
         if(LOWORD(w)==ID_REPEAT&&HIWORD(w)==BN_CLICKED) {
@@ -2785,6 +2826,8 @@ static void create_controls(HWND h)
     g.save = mk(h, "BUTTON", "Save", BS_OWNERDRAW | WS_TABSTOP, ID_SAVE);
     g.options_button=mk(h,"BUTTON","Input options",BS_OWNERDRAW|WS_TABSTOP,ID_OPTIONS);
     g.monitor_button=mk(h,"BUTTON","Monitor",BS_OWNERDRAW|WS_TABSTOP,ID_MONITOR);
+    g.updates_button=mk(h,"BUTTON","Updates",BS_OWNERDRAW|WS_TABSTOP,ID_UPDATES);
+    g.local_pico_button=mk(h,"BUTTON","Pico on this PC",BS_OWNERDRAW|WS_TABSTOP,ID_LOCAL_PICO);
     g.replay_button=mk(h,"BUTTON","Replay...",BS_OWNERDRAW|WS_TABSTOP,ID_REPLAY);
     g.arm = mk(h, "BUTTON", "ARM", BS_OWNERDRAW | WS_TABSTOP, ID_ARM);
     g.panic = mk(h, "BUTTON", "PANIC", BS_OWNERDRAW | WS_TABSTOP, ID_PANIC);
@@ -2805,7 +2848,7 @@ static void create_controls(HWND h)
     g.edit[3] = mk(h, "EDIT", tmp, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_AUTO);
 
     HWND btns[] = {g.clear, g.save, g.arm, g.panic, g.cb[0], g.cb[1], g.cb[2],
-                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button};
+                   g.src[0], g.src[1], g.src[2],g.options_button,g.monitor_button,g.replay_button,g.updates_button,g.local_pico_button};
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
         subclass(btns[i], btn_proc);
 
@@ -2950,12 +2993,8 @@ static int window_executable_matches(HWND window,const wchar_t *expected)
 }
 static void open_monitor(void)
 {
-    wchar_t exe[2048];DWORD n=GetModuleFileNameW(NULL,exe,2048);if(!n||n>=2048)return;
-    wchar_t *slash=wcsrchr(exe,L'\\');if(!slash)return;wcscpy(slash+1,L"hidway-input-monitor.exe");
-    HWND existing=FindWindowW(L"HIDwayInputMonitor",NULL);
-    if(existing&&!window_executable_matches(existing,exe)){MessageBoxW(g.hwnd,L"Input Monitor is running from another folder. Close that copy, then click Monitor again to open the companion installed with this HIDway.",L"Close the previous Monitor",MB_OK|MB_ICONINFORMATION);return;}
-    if((INT_PTR)ShellExecuteW(g.hwnd,L"open",exe,NULL,NULL,SW_SHOWNORMAL)<=32)
-        MessageBoxW(g.hwnd,L"Install HIDway and Input Monitor from the same package. The monitor executable must be beside HIDway.",L"Monitor unavailable",MB_OK|MB_ICONINFORMATION);
+    int result=hw_companion_open(g.hwnd,HW_COMPANION_MONITOR);
+    if(result!=HW_COMPANION_OK)MessageBoxW(g.hwnd,hw_companion_error(result),L"Monitor unavailable",MB_OK|MB_ICONINFORMATION);
 }
 static void replay_choose(void)
 {
@@ -3229,6 +3268,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             case ID_MONITOR:open_monitor();break;
             case ID_REPLAY:replay_choose();break;
             case ID_OPTIONS:show_input_options();break;
+            case ID_LOCAL_PICO:use_local_pico(NULL);break;
+            case ID_UPDATES:
+                if(!g.preview){int result=hw_companion_open(hwnd,HW_COMPANION_UPDATES);
+                    if(result!=HW_COMPANION_OK)MessageBoxW(hwnd,hw_companion_error(result),L"Updates unavailable",MB_OK|MB_ICONINFORMATION);}
+                break;
             case ID_ARM: set_armed(!g.armed); break;
             case ID_PANIC: set_armed(0); history_add('w', "PANIC - all released"); break;
             case ID_CLEAR: SendMessageA(g.history, LB_RESETCONTENT, 0, 0); break;

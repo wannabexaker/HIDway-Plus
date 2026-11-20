@@ -1,5 +1,35 @@
 # Validation
 
+## Main-window same-PC button (2026-10-30)
+
+The main HUD exposes **Pico on this PC** beside ARM. It shares the existing
+Input options preset handler; capture, relay and firmware behavior are unchanged.
+Production window-command tests cover successful save without ARM or packets,
+missing/partial Pico USB collections, loopback peers, unsaved address/port,
+configuration save failure, preserved physical/touchpad preferences and relay
+settings, plus refusal during active capture/replay. Hidden-control tests check
+that the button disables while ARMED and re-enables after disarm. These checks
+do not replace yesterday's user-confirmed game acceptance with a new hardware
+test. Native pointer movement and original Raw Input overlap remain as documented.
+
+## Paired Windows updates (2026-10-29)
+
+The isolated Windows Release build passes with warnings treated as errors and
+all **11 CTest groups** pass. Companion routing tests mock process/window calls
+to check sibling paths, existing-instance restore, different-copy refusal,
+missing/reparse targets and launch failures without opening input applications.
+The Windows setup suite now passes **49 checks**, including registered-folder
+discovery and the update shortcut. The new update suite passes **27 checks**
+covering version states, fixed release metadata, digest/manifest tampering,
+ZIP traversal/duplicates, network failure and active-process refusal using
+isolated archives and mock HTTP. No real release is installed by these tests.
+
+The live public latest-release request returns no published release. This is
+shown explicitly instead of claiming the preview is up to date. End-to-end
+download/install of a real published GitHub release remains untested until a
+release exists. Existing running installations, the relay and Pico were left
+untouched. See [updates](UPDATES.md).
+
 ## Same-PC game acceptance (2026-10-29)
 
 **The user confirmed working in-game input after the configuration corrections.**

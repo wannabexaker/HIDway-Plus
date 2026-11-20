@@ -29,6 +29,18 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          canonical=$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path('tools/setup/hidway-updater.psm1').read_text(encoding='ascii')
+          values = dict(re.findall(r"Set-Variable -Name (Owner|Repo) -Value '([^']+)'", text))
+          assert len(values) == 2
+          print(values['Owner'] + '/' + values['Repo'])
+          PY
+          )
+          [[ $GITHUB_REPOSITORY == "$canonical" ]] || {
+            echo "::error::Updater is pinned to $canonical; refusing publication from $GITHUB_REPOSITORY."
+            exit 1
+          }
           [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not vX.Y.Z"; exit 1; }
           git fetch --quiet --force origin "refs/tags/$TAG:refs/tags/$TAG"
           [[ $(git cat-file -t "refs/tags/$TAG") == tag ]] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
@@ -68,7 +80,9 @@ jobs:
             git for-each-ref --format='%(contents:body)' "refs/tags/$TAG"
             echo
             echo "**Windows** (the PC you play from, and the gaming PC): download"
-            echo "\`HIDway-$TAG-windows.zip\`, unpack it and run \`Setup.cmd\`."
+            echo "\`HIDway-$TAG-windows.zip\`, unpack it and run \`HIDway-Setup.exe\`."
+            echo "Check for updates downloads Client, Probe and bundled companions for this PC only."
+            echo "Close the Windows tools before Install. Rollback restores the previous local tools."
             echo
             echo "**Pico firmware:** \`hidway_fw_<board>.uf2\` for Pico, Pico W, Pico 2 and"
             echo "Pico 2 W. Hold BOOTSEL while plugging the Pico in, then copy the file to it."
@@ -78,7 +92,25 @@ jobs:
             echo "SHA-256 checksums: \`SHA256SUMS.txt\`."
           } >notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release/* --clobber
+            echo "::error::Release already exists. Publish a new version instead of replacing update assets."
+            exit 1
           else
-            gh release create "$TAG" release/* --verify-tag --title "${title:-HIDway $TAG}" --notes-file notes.md
+            gh release create "$TAG" release/* --draft --verify-tag --title "${title:-HIDway $TAG}" --notes-file notes.md
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >release-metadata.json
+            export EXPECTED_SHA256
+            EXPECTED_SHA256=$(sha256sum "release/HIDway-$TAG-windows.zip" | cut -d' ' -f1)
+            python3 - <<'PY'
+          import json, os
+          tag = os.environ['TAG']
+          name = f'HIDway-{tag}-windows.zip'
+          release = json.load(open('release-metadata.json', encoding='utf-8'))
+          assets = [a for a in release['assets'] if a['name'] == name]
+          assert len(assets) == 1, 'Expected exactly one Windows ZIP'
+          asset = assets[0]
+          expected_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}"
+          assert asset['browser_download_url'] == expected_url, 'Wrong download URL'
+          assert asset['state'] == 'uploaded' and 1 < asset['size'] <= 128 * 1024 * 1024, 'Invalid asset state or size'
+          assert asset['digest'] == 'sha256:' + os.environ['EXPECTED_SHA256'], 'GitHub digest mismatch'
+          PY
+            gh release edit "$TAG" --draft=false
           fi

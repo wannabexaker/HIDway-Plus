@@ -14,11 +14,12 @@ Physical, touchpad and virtual/remote input paths are implemented. The 2026-10-2
 - Standalone input monitor with Windows device names, saved custom labels, Identify, per-device counters and optional injected-event observation; see [monitor](docs/INPUT_MONITOR.md).
 - Monitor button, explicit key/button/motion recording with CSV logs, and guarded replay through the normal Pi/Pico output path.
 - Dark Windows setup wizard bundles both apps and guides private networking, Pi relay setup and board-specific BOOTSEL flashing.
+- Open HIDway from Monitor or Monitor from HIDway; manual **Check for updates** downloads and updates both Windows tools together while preserving settings. See [updates](docs/UPDATES.md).
 - Connection feedback stays in the HUD, badge, tray status and recent history; Windows notification popups and taskbar flashing are disabled.
 - Independent keyboard/mouse forwarding and Physical, Touchpad, Virtual / remote switches.
 - Explicit Remote PC / Gaming PC routing, per-source held state and ordered keyboard/mouse transitions.
 - Gaming PC native cursor placement with Pico keys/clicks/wheels; optional experimental relative Pico movement.
-- One-click **Use Pico on this PC** preset in Input options, with local USB-device and relay-address checks; saves without ARM.
+- **Pico on this PC** button beside ARM, also available in Input options, with local USB-device and relay-address checks; selects the same-PC preset without ARM.
 - Configurable virtual click limit and optional hold-to-repeat by button/source/speed; normal drag when repeat is off.
 - Coalesced waitable sender clock, stale-input cancellation and bounded receiver queues with release priority.
 - Full keyboard/button state and cumulative mouse movement over UDP.
@@ -85,6 +86,53 @@ cmake --build .scratch/2026-10-26-pico2
 Flash the resulting `hidway_fw.uf2` using the board's BOOTSEL drive. `HIDWAY_T0=ON` builds the separate BOOTSEL-driven input test, not the normal relay mode.
 
 Install/configure the Pi using [RELAY.md](docs/RELAY.md). The input-source and click-queue test dependencies are included in the relay Makefile. A passing Windows CMake test does not validate the Linux build/deployment path; run those checks on Linux too.
+
+## Windows download, update and rollback
+
+Extract the complete Windows release ZIP, install it with `HIDway-Setup.exe`,
+then open **Updates** in HIDway or **Check for updates** in Monitor/the Start
+menu. The dark window shows **Installed**, **Latest** and the retained local
+rollback version. Choose **Check**, **Download**, close Client/Probe/Monitor,
+then **Install**. Each PC updates its own local copy; this never contacts another
+PC, updates the Pi, flashes firmware, or enables ARM.
+
+The standalone engine is `tools/setup/hidway-updater.psm1`, with the PowerShell
+5.1 WPF front end `hidway-updates.ps1`. Both are ASCII and use only Windows/.NET.
+The single immutable Owner/Repo pair pins requests to **wannabexaker/HIDway**.
+There is no repository/URL override, account, token, telemetry, background update
+timer or retry loop. API redirects to another repository are refused. GitHub's
+own release-storage redirects are allowed for the already validated asset only.
+
+Stable `vX.Y.Z` releases must contain exactly one `HIDway-vX.Y.Z-windows.zip`.
+The updater checks its exact project URL, uploaded state, 1 < size <= 128 MiB
+and lowercase GitHub SHA-256 digest. It verifies the downloaded bytes again,
+rejects unsafe ZIP paths and validates `PAYLOAD.sha256` plus `VERSION`. Installed
+versions are read from the adjacent `VERSION`; equal versions are up to date,
+older releases cannot be installed, and incomparable previews require an
+explicit **Install stable release...** confirmation. A missing release, rate
+limit or network failure appears as a non-fatal message.
+
+Installation stages a complete local directory and uses two same-volume atomic
+renames with a durable recovery journal. The previous tools remain available
+through **Rollback**. `hidway.ini`, Monitor aliases, recordings and other local
+files are retained, including settings changed after the update. Rollback is an
+explicit local recovery operation; it never downloads an older GitHub release.
+The fixed-source updater is retained when restoring legacy tools. Backups may
+contain private configuration; keep the sibling hidden update-store folder private.
+
+Maintainers publish an **annotated** `vX.Y.Z` tag on `main`. The release workflow
+checks the repository against the module's same Owner/Repo pair, runs CI, builds
+the ZIP and `SHA256SUMS.txt`, creates a draft, verifies GitHub's uploaded digest,
+then publishes. It refuses to replace an existing release. Publication uses
+GitHub Actions' short-lived built-in token; Windows users supply no credentials.
+See [the full update guide](docs/UPDATES.md) for tests and interrupted-update recovery.
+
+**Repository migration:** this checkout's existing remote was `HIDway-` when
+this updater was implemented. The updater intentionally uses `HIDway` exactly;
+the workflow refuses publication from the old remote. Review and transfer the
+changes to the intended repository before tagging; the updater has no fallback.
+The live `v0.3.0` ZIP predates the payload manifest and is safely rejected. Publish
+a new release with this workflow to provide the new installable package format.
 
 ## Usage
 

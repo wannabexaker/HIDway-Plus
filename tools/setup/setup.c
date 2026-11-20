@@ -11,7 +11,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,LPWSTR command,int sho
     wchar_t *last=wcsrchr(folder,L'\\');if(!last)return 2;*last=0;
     n=GetSystemDirectoryW(powershell,1800);if(!n||n>=1800)return 2;
     wcscat(powershell,L"\\WindowsPowerShell\\v1.0\\powershell.exe");
-    const wchar_t *script=!wcscmp(command,L"--uninstall")?L"hidway-uninstall.ps1":L"hidway-setup-gui.ps1";
+    const wchar_t *script=!wcscmp(command,L"--uninstall")?L"hidway-uninstall.ps1":!wcscmp(command,L"--updates")?L"hidway-updates.ps1":L"hidway-setup-gui.ps1";
     int smoke=!wcscmp(command,L"--smoke-test");
     swprintf(args,2304,L"-NoProfile -STA -ExecutionPolicy Bypass -File \"%ls\\%ls\"%ls",folder,script,smoke?L" -SmokeTest":L"");
     wchar_t command_line[4400];swprintf(command_line,4400,L"\"%ls\" %ls",powershell,args);

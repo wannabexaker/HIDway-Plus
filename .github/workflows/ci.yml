@@ -62,8 +62,13 @@ jobs:
           persist-credentials: false
 
       - name: Build (MSVC)
+        env:
+          HIDWAY_BUILD_VERSION: ${{ inputs.release && github.ref_name || '' }}
         run: |
-          cmake -S . -B build -A x64 -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          $options = @('-S', '.', '-B', 'build', '-A', 'x64', '-DCMAKE_COMPILE_WARNING_AS_ERROR=ON')
+          if ($env:HIDWAY_BUILD_VERSION) { $options += "-DHIDWAY_VERSION=$env:HIDWAY_BUILD_VERSION" }
+          cmake @options
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build build --config Release --parallel
 
       - name: Unit tests
@@ -73,6 +78,8 @@ jobs:
         shell: powershell
         run: |
           powershell -NoProfile -STA -File tools/setup/hidway-setup-gui.ps1 -ValidateOnly
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -STA -File tools/setup/hidway-updates.ps1 -ValidateOnly
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Stage the input monitor beside the client

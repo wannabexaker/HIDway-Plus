@@ -9,7 +9,7 @@ foreach($file in Get-ChildItem (Join-Path $PSScriptRoot '..\tools\setup') -Filte
 }
 $base=Join-Path ([IO.Path]::GetFullPath($Work)) ([guid]::NewGuid().ToString('N'))
 $source=Join-Path $base 'source';$install=Join-Path $base 'installed';New-Item -ItemType Directory -Path $source -Force | Out-Null
-$required=@('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','hidway.ini.example','HIDway-Setup.exe','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','LICENSE')
+$required=@('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','hidway.ini.example','HIDway-Setup.exe','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','hidway-updates.ps1','hidway-update-core.ps1','hidway-updater.psm1','LICENSE')
 foreach($name in $required){[IO.File]::WriteAllText((Join-Path $source $name),"fixture $name")}
 [IO.File]::WriteAllText((Join-Path $source 'hidway.ini.example'),"target = 100.100.100.100`nsource_physical = 1`nsource_virtual = 0`nloopback_mode = 0`n")
 function Manifest { $lines=@();foreach($file in Get-ChildItem -LiteralPath $source -File | Where-Object Name -ne 'PAYLOAD.sha256'){$lines+=((Get-HidwaySHA256 $file.FullName)+'  '+$file.Name)};[IO.File]::WriteAllLines((Join-Path $source 'PAYLOAD.sha256'),$lines) }
@@ -65,6 +65,9 @@ Check ((Test-Path (Join-Path $menu 'HIDway.lnk')) -and (Test-Path (Join-Path $me
 $shell=New-Object -ComObject WScript.Shell;$link=$shell.CreateShortcut((Join-Path $menu 'Input Monitor.lnk'))
 Check ($link.TargetPath -eq (Join-Path $install 'hidway-input-monitor.exe') -and $link.WorkingDirectory -eq $install) 'monitor shortcut target/cwd'
 $registration=Get-ItemProperty -LiteralPath $testKey
+Check ((Get-HidwayInstallationFolder $testKey) -eq $install) 'existing installation discovered for update wizard'
+$updateLink=$shell.CreateShortcut((Join-Path $menu 'Check for updates.lnk'))
+Check ($updateLink.Arguments -eq '--updates' -and $updateLink.TargetPath -eq (Join-Path $install 'HIDway-Setup.exe')) 'updates shortcut uses shared bootstrap'
 Check ($registration.InstallLocation -eq $install -and $registration.UninstallString.EndsWith('HIDway-Setup.exe" --uninstall')) 'uninstall registration'
 Set-ItemProperty -LiteralPath $testKey -Name HIDway -Value '"C:\another-copy\hidway-client.exe"'
 Remove-HidwayAutorun $install $testKey

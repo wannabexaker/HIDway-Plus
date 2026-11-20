@@ -9,7 +9,8 @@ function Get-HidwayPayload([string]$Source,[switch]$ManifestOnly) {
     $manifest = Join-Path $Source 'PAYLOAD.sha256'
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Incomplete package: PAYLOAD.sha256 is missing. Extract the complete release ZIP.' }
     if ((Get-Item -LiteralPath $manifest).Length -gt 65536) { throw 'Package manifest is too large.' }
-    $top = @('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','HIDway-Setup.exe','Start-Input-Monitor.cmd','INPUT_MONITOR.md','SECURITY.md','Setup.cmd','hidway-setup.ps1','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','relay-install.sh','hidway.ini.example','LICENSE','README.md','VERSION')
+    $top = @('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','HIDway-Setup.exe','Start-Input-Monitor.cmd','INPUT_MONITOR.md','SECURITY.md','Setup.cmd','hidway-setup.ps1','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','hidway-updates.ps1','hidway-update-core.ps1','relay-install.sh','hidway.ini.example','LICENSE','README.md','VERSION')
+    $top += 'hidway-updater.psm1'
     $files = @()
     foreach ($line in [IO.File]::ReadAllLines($manifest)) {
         if ($line -notmatch '^([0-9a-fA-F]{64})  ([A-Za-z0-9_. /-]+)$') { throw 'Invalid package manifest.' }
@@ -24,9 +25,10 @@ function Get-HidwayPayload([string]$Source,[switch]$ManifestOnly) {
         }
         $files += $relative
     }
-    foreach ($required in @('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','hidway.ini.example','HIDway-Setup.exe','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','LICENSE')) {
+    foreach ($required in @('hidway-client.exe','hidway-input-monitor.exe','hidway-probe.exe','hidway.ini.example','HIDway-Setup.exe','hidway-setup-gui.ps1','hidway-setup-core.ps1','hidway-uninstall.ps1','hidway-pi-setup.ps1','hidway-updates.ps1','hidway-update-core.ps1','LICENSE')) {
         if ($files -notcontains $required) { throw "Incomplete package: $required is not in the manifest." }
     }
+    if ($files -notcontains 'hidway-updater.psm1') { throw 'Incomplete package: hidway-updater.psm1 is not in the manifest.' }
     if (@($files | ForEach-Object {$_.ToLowerInvariant()} | Select-Object -Unique).Count -ne $files.Count) { throw 'Duplicate package paths.' }
     return $files
 }
@@ -43,13 +45,25 @@ function Assert-HidwayInstallPath([string]$Path) {
     }
     return $full
 }
+function Get-HidwayInstallationFolder([string]$RegistryKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HIDway') {
+    $registration=Get-ItemProperty -LiteralPath $RegistryKey -ErrorAction SilentlyContinue
+    if(-not $registration -or -not $registration.PSObject.Properties['InstallLocation']){return ''}
+    try{
+        $folder=Assert-HidwayInstallPath ([string]$registration.InstallLocation)
+        if(Test-Path -LiteralPath (Join-Path $folder 'hidway-client.exe') -PathType Leaf){return $folder}
+    }catch{}
+    return ''
+}
 function New-HidwayShortcut([string]$Path,[string]$Target,[string]$Folder) {
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($Path); $link.TargetPath = $Target; $link.WorkingDirectory = $Folder; $link.Save()
 }
 function Register-HidwayInstall([string]$Destination,[string]$Menu,[string]$RegistryKey,[string]$DesktopLink='') {
     New-Item -ItemType Directory -Path $Menu -Force | Out-Null
-    foreach($item in @(@('HIDway','hidway-client.exe'),@('Input Monitor','hidway-input-monitor.exe'),@('Setup guide','HIDway-Setup.exe'))){New-HidwayShortcut (Join-Path $Menu ($item[0]+'.lnk')) (Join-Path $Destination $item[1]) $Destination}
+    foreach($item in @(@('HIDway','hidway-client.exe'),@('Input Monitor','hidway-input-monitor.exe'),@('Setup guide','HIDway-Setup.exe'),@('Check for updates','HIDway-Setup.exe'))){
+        $linkPath=Join-Path $Menu ($item[0]+'.lnk');New-HidwayShortcut $linkPath (Join-Path $Destination $item[1]) $Destination
+        if($item[0] -eq 'Check for updates'){$shell=New-Object -ComObject WScript.Shell;$link=$shell.CreateShortcut($linkPath);$link.Arguments='--updates';$link.Save()}
+    }
     if($DesktopLink){New-HidwayShortcut $DesktopLink (Join-Path $Destination 'hidway-client.exe') $Destination}
     New-Item -Path $RegistryKey -Force | Out-Null
     $versionFile=Join-Path $Destination 'VERSION';$version=if(Test-Path -LiteralPath $versionFile){[IO.File]::ReadAllText($versionFile).Trim()}else{'preview'}
@@ -64,7 +78,7 @@ function Unregister-HidwayInstall([string]$Destination,[string]$Menu,[string]$Re
     $shell=New-Object -ComObject WScript.Shell;$links=@()
     if($DesktopLink){$links+=$DesktopLink}
     $links+=Join-Path ([IO.Path]::GetDirectoryName($Menu)) 'HIDway.lnk' # legacy CLI shortcut
-    foreach($name in @('HIDway','Input Monitor','Setup guide')){$links+=Join-Path $Menu ($name+'.lnk')}
+    foreach($name in @('HIDway','Input Monitor','Setup guide','Check for updates')){$links+=Join-Path $Menu ($name+'.lnk')}
     foreach($link in $links){if((Test-Path -LiteralPath $link) -and [IO.Path]::GetDirectoryName($shell.CreateShortcut($link).TargetPath) -eq $Destination){Remove-Item -LiteralPath $link}}
     try{[IO.Directory]::Delete($Menu,$false)}catch{} # only if empty; retain custom shortcuts
 }

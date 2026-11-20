@@ -1,4 +1,4 @@
-add_executable(hidway-input-monitor WIN32 main.c model.c device.c observer.c recording.c ../../common/hidway_recording.c monitor.rc)
+add_executable(hidway-input-monitor WIN32 main.c model.c device.c observer.c recording.c ../../common/hidway_recording.c ../../common/hidway_companion_win.c monitor.rc)
 add_executable(hidway-monitor-tests ../../tests/test_monitor_win.c model.c device.c recording.c ../../common/hidway_recording.c)
 foreach(t hidway-input-monitor hidway-monitor-tests)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ../../common)
