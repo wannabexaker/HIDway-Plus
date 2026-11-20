@@ -47,6 +47,8 @@ uf2=("$fw"/hidway_fw_*.uf2)
 ((${#uf2[@]})) || { echo "no firmware in $fw" >&2; exit 1; }
 cp "${uf2[@]}" "$stage/firmware/"
 printf '%s\r\n' "$version" >"$stage/VERSION"
+# The manifest is excluded from its own listing, so it is not read while written.
+# shellcheck disable=SC2094
 (cd "$stage" && find . -type f ! -name PAYLOAD.sha256 -print0 | sort -z | \
     while IFS= read -r -d '' file; do sha256sum -- "${file#./}"; done >PAYLOAD.sha256)
 

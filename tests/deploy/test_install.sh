@@ -157,7 +157,7 @@ full_setup() {
 run_full() { # run_full <script> <args...>
     local script=$1
     shift
-    PATH=$work/bin:$PATH HIDWAY_ROOT=$R HIDWAY_BUILD_USER= HIDWAY_SYSTEMCTL=$work/bin/systemctl \
+    PATH=$work/bin:$PATH HIDWAY_ROOT=$R HIDWAY_BUILD_USER='' HIDWAY_SYSTEMCTL=$work/bin/systemctl \
         HIDWAY_UDEVADM=$work/bin/udevadm HIDWAY_TAILSCALE=$work/bin/tailscale HIDWAY_MODEL_FILE=$work/model \
         bash "$script" "$@" >"$work/out" 2>&1
 }

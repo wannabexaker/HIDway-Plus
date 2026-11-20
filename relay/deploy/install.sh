@@ -181,7 +181,7 @@ parse_setting() { # parse_setting <opt> <value>
 
 merge_allowed_senders() {
     ((${#ALLOW_ADD[@]})) || return 0
-    local base= extra= kv list ip found joined= p
+    local base='' extra='' kv list ip found joined='' p
     local peers=() parts=()
     if [[ -f $ETC/hidwayd.conf ]]; then
         base=$(sed -n 's/^HIDWAY_ALLOW=//p' "$ETC/hidwayd.conf" | tail -n 1)
