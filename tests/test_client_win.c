@@ -678,6 +678,14 @@ int main(void)
     g.dpi=144;create_fonts();compute_layout();apply_layout();
     RECT frame144={0,0,g.L.W,g.L.H};AdjustWindowRectExForDpi(&frame144,WIN_STYLE,FALSE,0,144);
     VERIFY(g.L.H==780&&frame144.bottom-frame144.top<=1032&&frame144.right-frame144.left<=1920);
+    /* LIVE INPUT reaches down to just above the action row at every DPI, like
+     * the cards of the other tabs (no empty band on Control). */
+    for(UINT dpi=96;dpi<=192;dpi+=48) {
+        g.dpi=dpi;compute_layout();
+        VERIFY(g.L.live.bottom==g.L.recent.bottom&&g.L.live.bottom<g.L.arm.top&&g.L.arm.top-g.L.live.bottom<=S(14)&&
+               g.L.live.top>g.L.stats.bottom);
+    }
+    g.dpi=144;compute_layout();
     g.dpi=96;create_fonts();compute_layout();apply_layout();
     /* WAKE sits on the value line of a GAMING PC tile wide enough for it. */
     VERIFY(g.L.tiles[3].right-g.L.tiles[3].left>=S(140)&&g.L.tiles[3].right<=g.L.stats.right-S(14));

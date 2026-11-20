@@ -2139,7 +2139,7 @@ static void compute_layout(void)
         x += w + 8;
     }
     L->info_cy = S(205);
-    L->live = R(P, 238, W - P, 334);
+    L->live = R(P, 238, W - P, 450); /* down to just above the action row, like the other tabs' cards */
 
     /* Connection */
     L->settings = R(P, 100, W - P, 240);
@@ -2560,17 +2560,28 @@ static void paint_live(HDC dc)
     int mw = text_w(dc, g.f_label, mode);
     text_vc(dc, g.f_label, C_TEXT3, c.right - S(14) - mw, title_cy(c), mode);
 
+    /* The content sits in the middle of the card body (below the title). */
+    int mid = (c.top + S(34) + c.bottom - S(12)) / 2;
     if (!g.armed) {
         if(g.local_pico_notice[0]) {
-            RECT note={c.left+S(14),c.top+S(35),c.right-S(14),c.bottom-S(6)};
+            RECT note={c.left+S(14),0,c.right-S(14),0};
+            WCHAR w[256];
+            to_wide(g.local_pico_notice,w,256);
+            SelectObject(dc,g.f_label);
+            RECT calc=note;
+            DrawTextW(dc,w,-1,&calc,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX|DT_CALCRECT);
+            int h=calc.bottom-calc.top;
+            note.top=mid-h/2;
+            if(note.top<c.top+S(35))note.top=c.top+S(35);
+            note.bottom=c.bottom-S(6);
             text_in(dc,g.f_label,C_TEXT2,note,DT_CENTER|DT_WORDBREAK,g.local_pico_notice);
             return;
         }
         char hk[48], hint[96];
         hotkey_pretty(g.cfg.toggle.text, hk, sizeof hk);
         snprintf(hint, sizeof hint, "Press ARM or %s to start relaying", hk);
-        RECT a = {c.left, c.top + S(36), c.right, c.top + S(58)};
-        RECT b = {c.left, c.top + S(58), c.right, c.top + S(80)};
+        RECT a = {c.left, mid - S(22), c.right, mid};
+        RECT b = {c.left, mid, c.right, mid + S(22)};
         text_in(dc, g.f_body, C_TEXT2, a, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Input capture is off");
         text_in(dc, g.f_label, C_TEXT3, b, DT_CENTER | DT_VCENTER | DT_SINGLELINE, hint);
         return;
@@ -2579,8 +2590,8 @@ static void paint_live(HDC dc)
     int lx = c.left + S(14), cx0 = c.left + S(70), maxx = c.right - S(14);
     int ch = S(22), gap = S(6);
 
-    /* keys row */
-    int cy = c.top + S(50);
+    /* three rows around the middle: keys, mouse buttons, movement and wheel */
+    int cy = mid - S(36);
     text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Keys");
     int x = cx0, shown = 0, total = 0;
     const char *names[24];
@@ -2611,8 +2622,8 @@ static void paint_live(HDC dc)
     if (total == 0)
         text_vc(dc, g.f_label, C_TEXT3, cx0, cy, "none held");
 
-    /* mouse row */
-    cy = c.top + S(78);
+    /* mouse buttons row */
+    cy = mid;
     text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Mouse");
     static const struct { uint8_t bit; const char *name; } BTNS[] = {
         {BTN_L, "Left"}, {BTN_R, "Right"}, {BTN_M, "Middle"}, {BTN_X1, "Back"}, {BTN_X2, "Fwd"}};
@@ -2620,9 +2631,15 @@ static void paint_live(HDC dc)
     for (int i = 0; i < 5; i++)
         if (g.buttons & BTNS[i].bit)
             x += chip(dc, x, cy, ch, BTNS[i].name, C_CHIP, C_CHIP_BD, C_TEXT) + gap;
+    if (x == cx0)
+        text_vc(dc, g.f_label, C_TEXT3, cx0, cy, "none held");
+
+    /* movement and wheel row */
+    cy = mid + S(36);
+    text_vc(dc, g.f_label, C_TEXT3, lx, cy, "Motion");
     char mv[64];
     snprintf(mv, sizeof mv, "dx %+ld   dy %+ld   wheel %+d", (long)g.show_dx, (long)g.show_dy, g.show_dw);
-    text_vc(dc, g.f_mono, C_TEXT2, x == cx0 ? cx0 : x + S(4), cy, mv);
+    text_vc(dc, g.f_mono, C_TEXT2, cx0, cy, mv);
 }
 
 /* A painted field frame around a borderless edit. */
