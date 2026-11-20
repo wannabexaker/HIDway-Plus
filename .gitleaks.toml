@@ -1,0 +1,9 @@
+# Secret scan settings for CI (the "Secret scan" job in .github/workflows/ci.yml).
+# The built-in rules stay on; only values that are plainly not secrets are
+# allowed here, each with the reason. Never allow a whole folder.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Counting-pattern key (00 11 22 ... ff, twice) used as a fixture by the configuration tests"
+regexes = ['''^00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff$''']
