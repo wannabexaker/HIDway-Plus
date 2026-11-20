@@ -283,6 +283,9 @@ static struct {
     hidway_config_t pending;
     int input_dirty, input_error;
     char input_status[160];
+    /* Connection tab: why the last Save was refused or failed (empty: the hint) */
+    int conn_error;
+    char conn_status[160];
     /* Pico on this PC indication (read-only, GUI-thread timer) */
     unsigned pico_state;
     int pico_known, pico_pending;
@@ -2494,6 +2497,11 @@ static void paint_connection(HDC dc)
         text_at(dc, g.f_label, C_TEXT2, L->frame[i].left + S(2), L->label_y, labels[i]);
         field_frame(dc, L->frame[i], ID_TARGET + i, 1);
     }
+    if (g.conn_status[0]) { /* a refused or failed Save, in place of the hint */
+        text_in(dc, g.f_label, g.conn_error ? C_WARN : C_TEXT2, L->conn_hint, DT_LEFT | DT_WORDBREAK,
+                g.conn_status);
+        return;
+    }
     char hint[200];
     snprintf(hint, sizeof hint,
              "Relay address and port belong to the %s route; rate and disarm are shared "
@@ -2968,12 +2976,33 @@ static void subclass(HWND h, WNDPROC proc)
 /*  Settings                                                                */
 /* ======================================================================== */
 
-static int get_int(HWND edit, int fallback)
+/* A whole number lo..hi in `edit` (spaces around it allowed). Returns 1 and
+ * sets *out; 0 for an empty field, other text or a value out of range (an
+ * overflow gives LONG_MIN / LONG_MAX, which no range here includes). */
+static int field_int(HWND edit, int lo, int hi, int *out)
 {
-    char b[32];
+    char b[32], *end;
     GetWindowTextA(edit, b, sizeof b);
-    int v = atoi(b);
-    return v ? v : fallback;
+    const char *s = b;
+    while (isspace((unsigned char)*s))
+        s++;
+    long n = strtol(s, &end, 10);
+    if (end == s)
+        return 0;
+    while (isspace((unsigned char)*end))
+        end++;
+    if (*end || n < lo || n > hi)
+        return 0;
+    *out = (int)n;
+    return 1;
+}
+
+/* The Connection tab's status line (shown in place of its hint). */
+static void connection_status(const char *text, int error)
+{
+    snprintf(g.conn_status, sizeof g.conn_status, "%s", text ? text : "");
+    g.conn_error = error;
+    invalidate_fields();
 }
 
 /* Reopen the relay socket when the address in use changed (Save on the
@@ -2989,28 +3018,59 @@ static void relay_reopen(const char *old_target, int old_port)
     }
 }
 
-static void apply_settings(void)
+/* Connection tab Save. An invalid field is refused with a message on the
+ * tab: nothing changes and nothing is disarmed. Otherwise this disarms
+ * first, then saves; a failed save also changes nothing and says so.
+ * Ranges are those hidway.ini is read with. Returns 1 when saved. */
+static int apply_settings(void)
 {
+    char target[sizeof g.cfg.target] = {0};
+    int port, rate, disarm;
+    GetWindowTextA(g.edit[0], target, sizeof target);
+    const char *t = target;
+    while (isspace((unsigned char)*t))
+        t++;
+    if (!*t) {
+        connection_status("Settings not saved: enter the relay address.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[1], 1, 65535, &port)) {
+        connection_status("Settings not saved: port must be 1 to 65535.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[2], 10, 1000, &rate)) {
+        connection_status("Settings not saved: rate must be 10 to 1000 Hz.", 1);
+        return 0;
+    }
+    if (!field_int(g.edit[3], 0, 60000, &disarm)) {
+        connection_status("Settings not saved: disarm must be 0 (off) to 60000 ms.", 1);
+        return 0;
+    }
+
     if(g.armed)set_armed(0); /* release old peer before editing/opening a new peer */
-    char old_target[128];
+    char old_target[sizeof g.cfg.target];
     int old_port = g.cfg.port;
     strcpy(old_target, g.cfg.target);
 
-    GetWindowTextA(g.edit[0], g.cfg.target, sizeof g.cfg.target);
-    g.cfg.port = get_int(g.edit[1], g.cfg.port);
-    g.cfg.send_rate_hz = get_int(g.edit[2], g.cfg.send_rate_hz);
-    g.cfg.auto_disarm_ms = get_int(g.edit[3], 0);
-    if(g.cfg.port<1)g.cfg.port=1;else if(g.cfg.port>65535)g.cfg.port=65535;
-    if(g.cfg.send_rate_hz<10)g.cfg.send_rate_hz=10;else if(g.cfg.send_rate_hz>1000)g.cfg.send_rate_hz=1000;
-    if (g.cfg.auto_disarm_ms < 0)
-        g.cfg.auto_disarm_ms = 0;
-    hidway_profile_store(&g.cfg); /* address and port belong to the route in use */
-
-    if (!g.preview)
-        hidway_config_save("hidway.ini", &g.cfg);
+    hidway_config_t next = g.cfg;
+    memcpy(next.target, target, sizeof next.target);
+    next.port = port;
+    next.send_rate_hz = rate;
+    next.auto_disarm_ms = disarm;
+    hidway_profile_store(&next); /* address and port belong to the route in use */
+    int saved = g.preview || hidway_config_save("hidway.ini", &next);
+    if (saved)
+        g.cfg = next;
+    SecureZeroMemory(next.key_hex, sizeof next.key_hex);
+    if (!saved) {
+        connection_status("Could not save hidway.ini. Settings have not changed.", 1);
+        return 0;
+    }
+    connection_status(NULL, 0);
     relay_reopen(old_target, old_port);
     history_add('i', "Settings saved");
     invalidate_readouts();
+    return 1;
 }
 
 /* The Connection fields show the saved values (after a route switch). */
@@ -3024,6 +3084,7 @@ static void connection_fields_load(void)
     if (g.edit[2]) SetWindowTextA(g.edit[2], tmp);
     snprintf(tmp, sizeof tmp, "%d", g.cfg.auto_disarm_ms);
     if (g.edit[3]) SetWindowTextA(g.edit[3], tmp);
+    connection_status(NULL, 0);
 }
 
 /* ======================================================================== */
@@ -3250,6 +3311,14 @@ static int input_apply(void)
     int selection=(int)SendMessageA(g.repeat_source,CB_GETCURSEL,0,0);
     next.repeat_sources=repeat_source_masks[selection<0||selection>6?0:selection];
     next.repeat_cps=cps;next.virtual_click_cps=limit;
+    /* Remote PC: Hold to repeat may only name ticked sources ("All selected
+     * sources" always fits). Gaming PC always repeats virtual input. */
+    int ticked=(next.source_physical?HIDWAY_SOURCE_PHYSICAL:0)|(next.source_touchpad?HIDWAY_SOURCE_TOUCHPAD:0)|
+               (next.source_virtual?HIDWAY_SOURCE_VIRTUAL:0);
+    if(!next.loopback_mode&&next.repeat_enabled&&next.repeat_sources!=7&&(next.repeat_sources&~ticked)) {
+        input_status("Settings not saved: the repeat source includes a source that is not ticked under Sources.",1);
+        return 0;
+    }
     route_constraints(&next);
     if(!config_commit(&next,"Input settings saved - arm when ready",1))return 0;
     input_status("Saved. Press ARM when ready.",0);
@@ -3989,7 +4058,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             case ID_PANIC: set_armed(0); history_add('w', "PANIC - all released"); break;
             case ID_CLEAR: SendMessageA(g.history, LB_RESETCONTENT, 0, 0); break;
             case ID_SAVE:
-                apply_settings();
+                if (!apply_settings())
+                    break; /* the reason is on the Connection tab; no "Saved" flash */
                 g.saved_flash = 1;
                 InvalidateRect(g.save, NULL, FALSE);
                 SetTimer(hwnd, TIMER_SAVED, 1400, NULL);

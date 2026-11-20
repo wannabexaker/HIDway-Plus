@@ -600,12 +600,37 @@ int main(void)
     SetWindowTextA(g.click_cps,"7");
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
-    SendMessageA(g.repeat_button,CB_SETCURSEL,1,0);SendMessageA(g.repeat_source,CB_SETCURSEL,4,0);
+    SendMessageA(g.repeat_button,CB_SETCURSEL,1,0);
+    /* Hold to repeat cannot name a source that is not ticked (Virtual is not):
+     * refused like a bad speed, nothing applied, nothing disarmed. */
     output_count=0;
+    static const int unticked_sources[]={2,4,5}; /* Virtual, Physical + virtual, Touchpad + virtual */
+    for(size_t i=0;i<sizeof unticked_sources/sizeof unticked_sources[0];i++) {
+        SendMessageA(g.repeat_source,CB_SETCURSEL,(WPARAM)unticked_sources[i],0);
+        g.input_error=0;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+        VERIFY(g.armed&&output_count==0&&g.input_error&&strstr(g.input_status,"not ticked")&&
+               !memcmp(&before,&g.cfg,sizeof before)&&!fixture_saves&&g.input_dirty);
+    }
+    SendMessageA(g.repeat_source,CB_SETCURSEL,3,0); /* Physical + touchpad: both ticked */
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
     VERIFY(!g.armed&&output_count==3&&output[2].type==HIDWAY_MSG_RELEASE&&!g.input_error&&!g.input_dirty);
     VERIFY(g.cfg.repeat_enabled&&g.cfg.repeat_cps==15&&g.cfg.virtual_click_cps==7&&g.cfg.source_touchpad&&
-           g.cfg.repeat_button==1&&g.cfg.repeat_sources==5&&!g.cfg.loopback_mode&&g.cfg.relay_mouse);
+           g.cfg.repeat_button==1&&g.cfg.repeat_sources==3&&!g.cfg.loopback_mode&&g.cfg.relay_mouse);
+    /* "All selected sources" always fits, whatever is ticked. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    SendMessageA(g.repeat_source,CB_SETCURSEL,6,0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&g.cfg.repeat_sources==7&&!g.cfg.source_touchpad);
+    /* A source that is not ticked is fine while Hold to repeat is off. */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    SendMessageA(g.repeat_source,CB_SETCURSEL,1,0);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&!g.cfg.repeat_enabled&&g.cfg.repeat_sources==2);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_REPEAT,BN_CLICKED),(LPARAM)g.repeat);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_TOUCHPAD,BN_CLICKED),(LPARAM)g.src[1]);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.input_error&&g.cfg.repeat_enabled&&g.cfg.source_touchpad&&g.cfg.repeat_sources==2);
     /* Outside preview the same Apply writes hidway.ini... */
     g.preview=0;SetWindowTextA(g.click_cps,"8");
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
@@ -616,6 +641,56 @@ int main(void)
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
     VERIFY(fixture_saves==2&&!memcmp(&before,&g.cfg,sizeof before)&&g.input_error&&strstr(g.input_status,"Could not save"));
     fixture_save_ok=1;
+
+    /* ---- Connection tab Save: an invalid field is refused in the window
+     * (old value kept, nothing saved, not disarmed, no "Saved" flash). ---- */
+    ui_state();select_tab(TAB_CONNECTION);set_armed(1);VERIFY(g.armed);
+    before=g.cfg;output_count=0;
+    static const struct { int field; const char *text, *message; } bad_fields[]={
+        {0,"","relay address"},{0,"   ","relay address"},
+        {1,"0","port"},{1,"65536","port"},{1,"","port"},{1,"47x","port"},{1,"99999999999","port"},{1,"-5","port"},
+        {2,"0","rate"},{2,"9","rate"},{2,"1001","rate"},{2,"","rate"},
+        {3,"-1","disarm"},{3,"60001","disarm"},{3,"","disarm"},{3,"3s","disarm"},
+    };
+    for(size_t i=0;i<sizeof bad_fields/sizeof bad_fields[0];i++) {
+        connection_fields_load();VERIFY(!g.conn_status[0]&&!g.conn_error);
+        SetWindowTextA(g.edit[bad_fields[i].field],bad_fields[i].text);
+        g.saved_flash=0;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+        if(!strstr(g.conn_status,bad_fields[i].message))printf("connection field %d \"%s\": \"%s\"\n",
+            bad_fields[i].field,bad_fields[i].text,g.conn_status);
+        VERIFY(g.armed&&output_count==0&&g.conn_error&&strstr(g.conn_status,"not saved")&&
+               strstr(g.conn_status,bad_fields[i].message)&&!memcmp(&before,&g.cfg,sizeof before)&&
+               !fixture_saves&&!g.saved_flash);
+    }
+    /* Range ends are accepted (spaces around a number too); Save disarms. */
+    connection_fields_load();
+    SetWindowTextA(g.edit[1]," 65535 ");SetWindowTextA(g.edit[2],"1000");SetWindowTextA(g.edit[3],"0");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(!g.armed&&g.cfg.port==65535&&g.cfg.send_rate_hz==1000&&g.cfg.auto_disarm_ms==0&&!g.conn_status[0]&&
+           g.saved_flash&&g.cfg.profiles[HIDWAY_PROFILE_REMOTE].port==65535);
+    SetWindowTextA(g.edit[1],"1");SetWindowTextA(g.edit[2],"10");SetWindowTextA(g.edit[3],"60000");
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(g.cfg.port==1&&g.cfg.send_rate_hz==10&&g.cfg.auto_disarm_ms==60000&&!g.conn_error);
+    /* A failed hidway.ini write changes nothing and says so in the window. */
+    ui_state();g.preview=0;select_tab(TAB_CONNECTION);fixture_save_ok=0;before=g.cfg;
+    SetWindowTextA(g.edit[2],"500");g.saved_flash=0;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(fixture_saves==1&&!memcmp(&before,&g.cfg,sizeof before)&&g.conn_error&&
+           strstr(g.conn_status,"Could not save")&&!g.saved_flash);
+    fixture_save_ok=1;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SAVE,BN_CLICKED),(LPARAM)g.save);
+    VERIFY(fixture_saves==2&&g.cfg.send_rate_hz==500&&fixture_saved.send_rate_hz==500&&!g.conn_status[0]&&
+           !g.conn_error&&g.saved_flash&&!strcmp(fixture_saved.target,"192.0.2.10")&&fixture_saved.port==47800);
+    /* the status line is painted on the Connection tab in place of the hint */
+    connection_status("Settings not saved: port must be 1 to 65535.",1);
+    {
+        HDC sdc=GetDC(NULL),mdc=CreateCompatibleDC(sdc);
+        HBITMAP bm=CreateCompatibleBitmap(sdc,g.L.W,g.L.H);HGDIOBJ ob=SelectObject(mdc,bm);
+        RECT all={0,0,g.L.W,g.L.H};paint_content(mdc,all);
+        SelectObject(mdc,ob);DeleteObject(bm);DeleteDC(mdc);ReleaseDC(NULL,sdc);
+    }
+    connection_fields_load();VERIFY(!g.conn_status[0]); /* reloaded fields: hint again */
 
     /* ---- Route profiles: switching stores the route left, restores the
      * other route's own values, applies and saves. ---- */
