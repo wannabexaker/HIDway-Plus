@@ -3102,7 +3102,7 @@ static void paint_rail(HDC dc)
     }
     char sub[48];
     if (g.armed)
-        snprintf(sub, sizeof sub, "To the %s", route_name(g.cfg.loopback_mode));
+        snprintf(sub, sizeof sub, "%s", g.cfg.loopback_mode ? "Through the Pico" : "To the Gaming PC");
     else
         snprintf(sub, sizeof sub, "%s route", route_name(g.cfg.loopback_mode));
     text_fit(dc, g.f_label, g.armed ? W_ARMED_SUB : W_TEXT3, tx, scy, s.right - S(12), sub);
@@ -3155,10 +3155,10 @@ static void summary_text(int row, char *out, size_t cap)
     static const char *const buttons[] = {"Left", "Right", "Middle", "Back", "Forward"};
     switch (row) {
     case 0:
-        snprintf(out, cap, "%s to the %s",
+        snprintf(out, cap, "%s %s",
                  c->relay_keyboard && c->relay_mouse ? "Keyboard + mouse"
                  : c->relay_keyboard ? "Keyboard" : c->relay_mouse ? "Mouse" : "Nothing",
-                 route_name(c->loopback_mode));
+                 c->loopback_mode ? "through the Pico to this PC" : "to the Gaming PC");
         break;
     case 1:
         out[0] = 0;

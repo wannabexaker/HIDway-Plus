@@ -380,7 +380,7 @@ static unsigned text_errors(HDC dc)
     ECHK(tx + text_w(dc, g.f_pill, "DISARMED") > inner);
     ECHK(tx + text_w(dc, g.f_pill, "ARMED") + S(6) + text_w(dc, g.f_timer, "00:00") > inner);
     ECHK(tx + text_w(dc, g.f_pill, "ARMED") + S(6) + text_w(dc, g.f_mono, "9:59:59") > inner); /* hours: smaller face */
-    static const char *const subs[] = {"Remote PC route", "Gaming PC route", "To the Remote PC", "To the Gaming PC"};
+    static const char *const subs[] = {"Remote PC route", "Gaming PC route", "To the Gaming PC", "Through the Pico"};
     for (size_t i = 0; i < sizeof subs / sizeof subs[0]; i++)
         ECHK(tx + text_w(dc, g.f_label, subs[i]) > inner);
     ECHK(L->mark.right + S(9) + text_w(dc, g.f_title, "HIDway") + S(8) + text_w(dc, g.f_label, "v10.20.300") > L->rail.right - S(16));
@@ -412,7 +412,7 @@ static unsigned text_errors(HDC dc)
     ECHK(head > L->body.right - L->body.left);
     e += text_w(dc, g.f_semi, "Input capture is off") + S(8) + text_w(dc, g.f_label, "Press ARM or Ctrl+Shift+F12 to start relaying") >
          L->live.right - L->live.left - S(28);
-    ECHK(S(110) + text_w(dc, g.f_fact, "Keyboard + mouse to the Remote PC") > L->live.right - L->live.left - S(28));
+    ECHK(S(110) + text_w(dc, g.f_fact, "Keyboard + mouse through the Pico to this PC") > L->live.right - L->live.left - S(28));
     ECHK(S(110) + text_w(dc, g.f_fact, "Virtual, Physical through Pico") > L->live.right - L->live.left - S(28));
     ECHK(S(110) + text_w(dc, g.f_fact, "repeat Forward 25/s, 25/s") > L->live.right - L->live.left - S(28));
     /* Connection */
