@@ -3,7 +3,7 @@
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 Set-Variable -Name Owner -Value 'wannabexaker' -Option Constant -Scope Script
-Set-Variable -Name Repo -Value 'HIDway-' -Option Constant -Scope Script
+Set-Variable -Name Repo -Value 'HIDway-Plus' -Option Constant -Scope Script
 $script:Limit = 128MB
 
 function Get-HidwayUpdateSource {

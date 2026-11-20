@@ -101,7 +101,7 @@ Check ($piText.Contains('--serial-default') -and $piText.Contains('Get-HidwayRel
 # The remote install line must reach ssh as ONE argument. Building it with "..."+'...' on the ssh line once split it and sent install.sh a stray "+".
 $remoteDir='.cache/hidway-setup-'+('0123456789abcdef'*2)
 $command=Get-HidwayRelayInstallCommand $remoteDir '100.64.1.2' '100.64.9.9' 'usb' '--serial-default /dev/ttyUSB0'
-$expected='sudo bash '+$remoteDir+'/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind 100.64.1.2 --allow-add 100.64.9.9 --uart usb --serial-default /dev/ttyUSB0; hidway_rc=$?; rm -rf -- '+$remoteDir+'; exit $hidway_rc'
+$expected='sudo bash '+$remoteDir+'/install.sh --repo https://github.com/wannabexaker/HIDway-Plus.git --ref latest-tag --bind 100.64.1.2 --allow-add 100.64.9.9 --uart usb --serial-default /dev/ttyUSB0; hidway_rc=$?; rm -rf -- '+$remoteDir+'; exit $hidway_rc'
 Check ($command -ceq $expected) 'relay install command: install, remove the uploaded copy, keep the exit code'
 $argProbe=Join-Path $base 'arg-probe.cmd';[IO.File]::WriteAllText($argProbe,"@echo off`r`necho ARGS=[%*]`r`n")
 $seen=(& $argProbe -t -- 'pi@host' $command | Out-String).Trim()

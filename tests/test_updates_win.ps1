@@ -11,7 +11,7 @@ function Release {
   name='HIDway-v1.2.3-windows.zip';browser_download_url=((Get-HidwayUpdateSource).Web+'/releases/download/v1.2.3/HIDway-v1.2.3-windows.zip')
   state='uploaded';size=12;digest=('sha256:'+('0'*64))})}
 }
-Check ((Get-HidwayUpdateSource).Repo -ceq 'HIDway-') 'exact repository with trailing hyphen'
+Check ((Get-HidwayUpdateSource).Repo -ceq 'HIDway-Plus') 'exact repository name'
 Check ((Get-HidwayReleaseOffer 'v1.0.0' (Release)).State -eq 'Available') 'newer stable'
 Check ((Get-HidwayReleaseOffer '1.2.3' (Release)).State -eq 'Current') 'installed semver without v prefix'
 Check ((Get-HidwayReleaseOffer 'v2.0.0' (Release)).State -eq 'Older') 'downgrade not offered'

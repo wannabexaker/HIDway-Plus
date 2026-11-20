@@ -19,7 +19,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'SSH connection/host verification failed.' }
     & $scp -o StrictHostKeyChecking=yes -- $installer "${target}:$remote/install.sh"
     if ($LASTEXITCODE -ne 0) { throw 'Could not transfer the relay installer.' }
-    Write-Host 'Installing/updating the relay from the public main branch. Configuration is backed up; this sender is added without removing the other PC.' -ForegroundColor Yellow
+    Write-Host 'Installing/updating the relay from the latest published release. Configuration is backed up; this sender is added without removing the other PC.' -ForegroundColor Yellow
     $command=Get-HidwayRelayInstallCommand $remote $RelayIP $SenderIP $Uart $serialOption
     & $ssh -t -o StrictHostKeyChecking=yes -- $target $command
     if ($LASTEXITCODE -ne 0) { throw 'Relay installation failed. Read the message above; existing relay backups remain on the Pi.' }

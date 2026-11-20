@@ -43,7 +43,7 @@ if ($Role -eq 'remote') { $Role = 'player' } # legacy CLI name remains compatibl
 $Components = @(
     [pscustomobject]@{ Key = 'HIDway'; Name = 'HIDway + Input Monitor'; Roles = @('player','gaming'); Kind = 'hidway'
         What = 'reads your keyboard and mouse and sends them to the Raspberry Pi'
-        Page = 'https://github.com/wannabexaker/HIDway-/releases/latest'; Match = $null; Id = $null; License = 'MIT' }
+        Page = 'https://github.com/wannabexaker/HIDway-Plus/releases/latest'; Match = $null; Id = $null; License = 'MIT' }
     [pscustomobject]@{ Key = 'Tailscale'; Name = 'Tailscale'; Roles = @('player', 'gaming'); Kind = 'winget'
         What = 'private network between your PCs and the Raspberry Pi'
         Page = 'https://tailscale.com/download/windows'; Match = 'Tailscale'; Id = 'Tailscale.Tailscale'

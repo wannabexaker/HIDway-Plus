@@ -84,7 +84,7 @@ separate device; do not confuse it with the Pico HID USB cable.
 Click **Connect and install relay**. A visible terminal handles SSH host-key
 verification, login and sudo. Verify the fingerprint against the Pi. The wizard
 never stores the password or suppresses these prompts. It transfers the bundled
-installer, installs from this repository's `main` branch, sets the chosen bind
+installer, installs this repository's latest published release, sets the chosen bind
 and adds the sender while preserving previously permitted PCs (maximum eight).
 This allows installing Remote PC and Gaming PC without losing the first peer.
 Only one ARM session owns the relay at a time. It then checks `hidwayd` service

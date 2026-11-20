@@ -36,7 +36,7 @@ installs, process kills, Windows notification popups or scheduled retries.
 `hidway-update-core.ps1` imports the module; the module does not import the
 setup core or any external module.
 
-The only Owner/Repo pair is the module's script-constant `wannabexaker` / `HIDway-`,
+The only Owner/Repo pair is the module's script-constant `wannabexaker` / `HIDway-Plus`,
 the repository the application is published from.
 All project API/download URLs are derived from it. Neither GUI nor module APIs
 accept another URL, owner, repository or credentials. API redirects are rejected,
@@ -65,11 +65,16 @@ it never means up to date. HTTP 403/429 reports rate limiting/access restriction
 Network, HTTP and malformed-metadata failures are non-fatal check results. There
 is no retry loop or authentication fallback.
 
-The pinned repository has no published release yet, so **Check** reports that
-none is available. A workflow-produced release is needed for an end-to-end
-public install. The `v0.3.0` archive in the earlier `wannabexaker/HIDway`
-repository predates PAYLOAD.sha256 and the self-update files; it was refused
-when checked on 2026-11-06 and is no longer consulted.
+Releases from `v0.4.0` on are produced by the release workflow of this
+repository. The older line, up to `v0.3.0`, stays in the
+`wannabexaker/HIDway-beta` repository; those archives predate PAYLOAD.sha256
+and the self-update files and are not consulted.
+
+Because API redirects are refused, an installed updater stops finding releases
+when the repository is renamed. That happened once, on 2026-11-20
+(`HIDway-` became `HIDway-Plus`): versions `v0.4.0` and `v0.4.1` report the
+redirect as an error and have to be replaced once with the setup wizard of a
+newer package. Versions from `v0.4.2` on look in `HIDway-Plus`.
 
 ## Local transaction and recovery
 
@@ -141,9 +146,9 @@ replace published update assets; use a new version. The built-in, short-lived
 GitHub Actions token is used only for publication. No user PAT/secrets are needed.
 
 On 2026-11-20 the owner decided that updates come from the same repository as
-the application. The pin moved from `HIDway` to `HIDway-`, matching this
-checkout's remote, the setup wizard's Pi step and the README. The repository
-guard prevents an accidental release from any other repository.
+the application, and renamed that repository to `HIDway-Plus`. The pin, the
+setup wizard's Pi step, the firmware's program URL and the README all name it.
+The repository guard prevents an accidental release from any other repository.
 
 ## Versioning
 
@@ -159,9 +164,8 @@ guard prevents an accidental release from any other repository.
   `same-pc-preview-2026.10.30`. A label is not comparable with a release, so
   the updater shows it as a preview and asks before installing a stable
   release over it. It never treats a preview as up to date.
-- The Raspberry Pi relay follows the same tags once `HIDWAY_REF=latest-tag` is
-  set (see [relay operations](RELAY.md)). Until the first tag is published the
-  setup wizard installs the relay from `main`.
+- The Raspberry Pi relay follows the same tags (`HIDWAY_REF=latest-tag`, see
+  [relay operations](RELAY.md)); the setup wizard installs the relay that way.
 
 ## Tests and trust
 

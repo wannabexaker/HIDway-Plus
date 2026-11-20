@@ -243,7 +243,7 @@ function Get-HidwaySshTarget([string]$PiHost,[string]$PiUser) {
 function Get-HidwayRelayInstallCommand([string]$Remote,[string]$RelayIP,[string]$SenderIP,[string]$Uart,[string]$SerialOption) {
     # One remote shell line, passed to ssh as ONE argument: install, remove the uploaded copy whatever the result, keep the installer's exit code.
     if ($Remote -notmatch '^\.cache/hidway-setup-[0-9a-f]{32}\z') { throw 'Invalid remote setup directory.' }
-    return "sudo bash $Remote/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind $RelayIP --allow-add $SenderIP --uart $Uart $SerialOption; hidway_rc=`$?; rm -rf -- $Remote; exit `$hidway_rc"
+    return "sudo bash $Remote/install.sh --repo https://github.com/wannabexaker/HIDway-Plus.git --ref latest-tag --bind $RelayIP --allow-add $SenderIP --uart $Uart $SerialOption; hidway_rc=`$?; rm -rf -- $Remote; exit `$hidway_rc"
 }
 function Get-HidwayPicoFile([string]$Source,[string]$Board,[string]$Drive) {
     if ($Board -notin @('pico','pico_w','pico2','pico2_w')) { throw 'Choose the exact Pico board.' }

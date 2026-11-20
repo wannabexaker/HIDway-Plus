@@ -85,3 +85,6 @@ Thumbs.db
 
 # Local working files (plans, drafts, test output)
 .scratch/
+
+# Owner's private collaboration history (kept local on purpose)
+/docs/PROGRESS_HISTORY.md
