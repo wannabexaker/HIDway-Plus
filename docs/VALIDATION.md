@@ -5,10 +5,25 @@
 Before any change the working tree was built and all 11 CTest groups passed;
 that state is commit `f452667`. After the changes the Windows Release build
 passes with warnings treated as errors and all **11 CTest groups** pass again.
-The Linux installer suite `tests/deploy/test_install.sh` passes **74 checks**
+The Linux installer suite `tests/deploy/test_install.sh` passes **80 checks**
 under WSL with stubbed git/make/systemctl. That WSL has no compiler, so the
-relay build, `make check` and the relay fail-safe tests were **not** run for
-this change; `relay/hidwayd.c` and `common/` were not modified.
+relay build, `make check` and the relay fail-safe tests could not run locally;
+GitHub CI ran them on the pushed branch: Linux unit tests, relay build and
+`make check`, fail-safe 18/18, installer tests and shellcheck, the Windows job
+and firmware for all four boards passed. `relay/hidwayd.c` and `common/` were
+not modified.
+
+A code review and a security review were run before merging. The code review
+found one defect introduced by this work: the remote install command was
+concatenated on the `ssh` line, where PowerShell does not treat `+` as an
+operator, so `install.sh` received a stray argument and the Pi step would have
+failed every time. The earlier test only looked for text in the script. The
+command is now built in one function, tested for its exact text and for
+reaching a native program as a single argument, and the installer test refuses
+a stray trailing argument. The review also led to: an explicit `--serial`
+winning over `--serial-default`, the setup guide recognising a copy installed
+by `Setup.cmd`, Sunshine backups that are never overwritten, and a shorter
+Tailscale lookup. The security review reported no high or medium findings.
 
 Each reported installer defect was reproduced before the fix and re-run after:
 
