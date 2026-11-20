@@ -54,7 +54,7 @@ $script:task=$null;$script:async=$null;$script:operation='';$script:closing=$fal
 function Refresh-LocalState {
  $script:previous=$null;$script:localReady=$false
  try{
-  if($destination){$script:current=Get-HidwayInstalledVersion $destination}
+  if($destination){$script:current=Get-HidwayInstalledVersion $destination;$null=Sync-HidwayRegisteredVersion $destination} # also corrects an entry left stale by an older updater
   $ui.Installed.Text="Installed: $script:current"
   if($destination){
    $script:localReady=(Test-Path -LiteralPath (Join-Path $destination 'hidway-client.exe') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $destination 'hidway-probe.exe') -PathType Leaf)

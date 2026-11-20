@@ -1,5 +1,32 @@
 # Validation
 
+## First release and real updates (2026-11-20)
+
+`v0.4.0` is the first release published from this repository. The release
+workflow had never run here and could not have published: GitHub answers 404
+for a draft asked for by tag and gives draft assets provisional `untagged-...`
+URLs, while the publish step expected the final ones. This was confirmed with
+a private draft that was deleted again, the step was corrected and dry-run
+against that draft's real metadata, and the corrected workflow then built,
+verified and published `v0.4.0` on its first run.
+
+Both PCs of the reference setup were first brought to the same preview with
+the package installer (a backup was taken, no program was running or stopped,
+`hidway.ini` unchanged). The installed updater was then exercised against the
+real release:
+
+| Step | Laptop | Gaming PC |
+|---|---|---|
+| Check | preview offered `v0.4.0` | preview offered `v0.4.0` |
+| Download and verify | size, GitHub digest, archive paths and manifest passed | passed |
+| Install | refused: the folder was in use by a coding-assistant session started in it; installation left intact | folder swap completed, `hidway.ini` unchanged, rollback to the preview retained |
+| Check again | up to date (after applying the same verified package with the file-by-file installer) | up to date |
+
+Two defects found by this run were corrected afterwards: the updater did not
+update the version shown in Windows Installed apps, and a folder in use was
+reported as a raw rename error with a recovery journal left behind. Neither PC
+ran ARM during these steps; the client stayed closed on the Gaming PC.
+
 ## Installer fixes and window layout (2026-11-20)
 
 Before any change the working tree was built and all 11 CTest groups passed;

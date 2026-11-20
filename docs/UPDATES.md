@@ -102,7 +102,18 @@ and recordings are copied forward; previous managed tools are restored. The
 current fixed-source updater module/GUI are retained, so restoring a legacy
 client cannot switch the update feed back to the old repository. A regenerated
 local manifest records that intentional mixture. Installed apps/shortcuts keep
-the same paths. The transaction does not change system policies or elevate.
+the same paths, and after Install or Rollback the version shown in Windows
+Installed apps is set to the installed `VERSION` (only for the entry that points
+at this folder; opening the Updates window also corrects an entry left stale by
+an older updater). The transaction does not change system policies or elevate.
+
+The swap renames the installation folder, and Windows refuses that while any
+program has the folder as its working folder or keeps a file in it open: a
+terminal, an editor or a coding assistant started in that folder is enough. In
+that case nothing is moved, no recovery is left pending, and the window says
+that the folder is in use; close that program and choose Install again. The
+setup wizard of an extracted package replaces files one by one and is not
+affected, so it remains the alternative.
 
 The latest previous snapshot is offered by Rollback. Older transaction folders
 and download caches are retained for diagnosis, not executed or silently deleted.

@@ -287,7 +287,7 @@ function Repair-HidwayTransaction($Store) {
 function Invoke-HidwaySwitch($Store,[string]$Candidate) {
     Assert-HidwayClosed
     $record = [pscustomobject]@{ Destination = $Store.Destination; Candidate = [IO.Path]::GetFileName($Candidate); Previous = ('previous-' + [guid]::NewGuid().ToString('N')); Files = @(Get-HidwaySnapshot $Store.Destination) }
-    $previous = Join-Path $Store.Root $record.Previous; $locks = @()
+    $previous = Join-Path $Store.Root $record.Previous; $locks = @(); $moving = $false
     try {
         # Check file locks before either directory is moved. Owner mutexes
         # prevent client/Monitor restarts throughout this transaction.
@@ -302,12 +302,19 @@ function Invoke-HidwaySwitch($Store,[string]$Candidate) {
         foreach ($stream in $locks) { $stream.Dispose() }; $locks = @()
         Write-HidwayRecord $Store.Journal $record
         # Two same-volume atomic renames; durable journal covers the gap.
+        $moving = $true
         Move-HidwayDirectory $Store.Destination $previous
         Move-HidwayDirectory $Candidate $Store.Destination
         Write-HidwayRecord $Store.State $record; [IO.File]::Delete($Store.Journal)
     } catch {
         $problem = $_.Exception.Message
         if (!(Test-Path -LiteralPath $Store.Destination) -and (Test-Path -LiteralPath $previous)) { Move-HidwayDirectory $previous $Store.Destination; [IO.File]::Delete($Store.Journal) }
+        elseif ($moving -and (Test-Path -LiteralPath $Store.Destination) -and !(Test-Path -LiteralPath $previous)) {
+            # The first rename was refused: nothing moved and no recovery is pending. Windows refuses to rename a
+            # folder while any program has it as its working folder or keeps a file in it open.
+            [IO.File]::Delete($Store.Journal)
+            throw "The installation folder is in use by another program, so it could not be replaced. Close any terminal, editor or other tool that was opened in that folder, then choose Install again. Nothing was changed. Details: $problem"
+        }
         throw "Update was not completed: $problem. Existing version restored when possible; recovery data retained."
     } finally { foreach ($stream in $locks) { $stream.Dispose() } }
 }
@@ -323,7 +330,25 @@ function Invoke-HidwayLocalTransaction([string]$Destination,[scriptblock]$Action
         & $Action $store
     } finally { foreach ($guard in $guards) { $guard.ReleaseMutex(); $guard.Dispose() }; if ($lock) { $lock.Dispose() } }
 }
+function Sync-HidwayRegisteredVersion([string]$Directory,[string]$RegistryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HIDway') {
+    # Windows "Installed apps" shows DisplayVersion. Keep it equal to VERSION, only for the entry that
+    # points at this installation. Returns $true when the value was changed; never throws.
+    try {
+        $dest = Assert-HidwayLocalPath $Directory
+        $entry = Get-ItemProperty -LiteralPath $RegistryKey -ErrorAction SilentlyContinue
+        if (!$entry -or !$entry.PSObject.Properties['InstallLocation'] -or ([string]$entry.InstallLocation).TrimEnd('\') -ine $dest) { return $false }
+        $version = Get-HidwayInstalledVersion $dest
+        if ($version -eq 'unknown' -or !$version -or $version.Length -gt 128) { return $false }
+        if ($entry.PSObject.Properties['DisplayVersion'] -and ([string]$entry.DisplayVersion) -ceq $version) { return $false }
+        $null = New-ItemProperty -LiteralPath $RegistryKey -Name DisplayVersion -Value $version -PropertyType String -Force
+        return $true
+    } catch { return $false }
+}
 function Install-HidwayUpdate($Prepared,[string]$Destination,[switch]$AllowPreview) {
+    Invoke-HidwayInstall $Prepared $Destination -AllowPreview:$AllowPreview
+    $null = Sync-HidwayRegisteredVersion $Destination
+}
+function Invoke-HidwayInstall($Prepared,[string]$Destination,[switch]$AllowPreview) {
     Invoke-HidwayLocalTransaction $Destination {
         param($store)
         $offer = Confirm-HidwayOffer $Prepared.Offer (Get-HidwayInstalledVersion $store.Destination)
@@ -340,6 +365,10 @@ function Install-HidwayUpdate($Prepared,[string]$Destination,[switch]$AllowPrevi
     }
 }
 function Restore-HidwayUpdate([string]$Destination) {
+    Invoke-HidwayRestore $Destination
+    $null = Sync-HidwayRegisteredVersion $Destination
+}
+function Invoke-HidwayRestore([string]$Destination) {
     Invoke-HidwayLocalTransaction $Destination {
         param($store)
         if (!(Test-Path -LiteralPath $store.State)) { throw 'No previous version is available.' }
@@ -360,4 +389,4 @@ function Repair-HidwayUpdate([string]$Destination) {
     # Restore/finish only a validated pending journal; never fetch or ARM.
     Invoke-HidwayLocalTransaction $Destination { param($store) }
 }
-Export-ModuleMember -Function Get-HidwayUpdateSource,Get-HidwayInstalledVersion,Get-HidwaySHA256,Get-HidwayReleaseOffer,Get-HidwayLatestUpdate,Save-HidwayUpdate,Expand-HidwayUpdate,Install-HidwayUpdate,Get-HidwayRollback,Restore-HidwayUpdate,Repair-HidwayUpdate
+Export-ModuleMember -Function Sync-HidwayRegisteredVersion,Get-HidwayUpdateSource,Get-HidwayInstalledVersion,Get-HidwaySHA256,Get-HidwayReleaseOffer,Get-HidwayLatestUpdate,Save-HidwayUpdate,Expand-HidwayUpdate,Install-HidwayUpdate,Get-HidwayRollback,Restore-HidwayUpdate,Repair-HidwayUpdate

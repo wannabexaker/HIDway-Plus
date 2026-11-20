@@ -96,6 +96,17 @@ Restore-HidwayUpdate $dest
 Reject {Install-HidwayUpdate $ready $dest} 'second rename failure reported'
 Check ((Get-HidwayInstalledVersion $dest) -eq 'v1.0.0') 'original restored after failed swap'
 & $module {Remove-Item Function:script:Move-HidwayDirectory; function script:Move-HidwayDirectory($Source,$Destination){[IO.Directory]::Move($Source,$Destination)}}
+# First rename refused (another program is working inside the folder): plain words, nothing moved, no journal left.
+& $module {Remove-Item Function:script:Move-HidwayDirectory; function script:Move-HidwayDirectory($Source,$Destination){throw 'The process cannot access the file because it is being used by another process.'}}
+$message='';try{Install-HidwayUpdate $ready $dest}catch{$message=$_.Exception.Message}
+Check ($message -match 'in use by another program' -and $message -match 'Nothing was changed') 'folder in use is reported in plain words'
+Check ((Get-HidwayInstalledVersion $dest) -eq 'v1.0.0') 'folder in use leaves the installation unchanged'
+Check (!(Test-Path -LiteralPath (& $module {param($directory)(Get-HidwayStore $directory).Journal} $dest))) 'refused first rename leaves no recovery journal'
+& $module {Remove-Item Function:script:Move-HidwayDirectory; function script:Move-HidwayDirectory($Source,$Destination){[IO.Directory]::Move($Source,$Destination)}}
+Install-HidwayUpdate $ready $dest
+Check ((Get-HidwayInstalledVersion $dest) -eq 'v1.2.3') 'install succeeds once the folder is free again'
+Restore-HidwayUpdate $dest
+Check ((Get-HidwayInstalledVersion $dest) -eq 'v1.0.0') 'and can be rolled back'
 Reject {Install-HidwayUpdate $ready '\\example\share\HIDway'} 'remote PC paths rejected'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $unsafe=Join-Path $base 'unsafe.zip';$z=[IO.Compression.ZipFile]::Open($unsafe,'Create');$null=$z.CreateEntry('HIDway-v1.2.3/../outside.exe');$z.Dispose()
@@ -114,6 +125,20 @@ $rollbackDir=& $module {param($directory)$store=Get-HidwayStore $directory;$reco
 [IO.File]::AppendAllText((Join-Path $rollbackDir 'hidway-probe.exe'),'tampered')
 Reject {Restore-HidwayUpdate $dest} 'tampered previous version refuses rollback'
 Check ((Get-HidwayInstalledVersion $dest) -eq 'v1.0.0') 'failed rollback leaves active version unchanged'
+# Windows "Installed apps" version follows VERSION, only for the entry that points at this installation.
+$regKey='HKCU:\Software\HIDwayUpdateTests\'+[guid]::NewGuid().ToString('N');$regParentExisted=Test-Path 'HKCU:\Software\HIDwayUpdateTests'
+$null=New-Item -Path $regKey -Force
+try{
+ $null=New-ItemProperty -Path $regKey -Name InstallLocation -Value $dest -PropertyType String -Force
+ $null=New-ItemProperty -Path $regKey -Name DisplayVersion -Value 'old-preview' -PropertyType String -Force
+ Check (Sync-HidwayRegisteredVersion $dest $regKey) 'stale Installed apps version is corrected'
+ Check ((Get-ItemProperty -LiteralPath $regKey).DisplayVersion -ceq (Get-HidwayInstalledVersion $dest)) 'Installed apps version equals VERSION'
+ Check (!(Sync-HidwayRegisteredVersion $dest $regKey)) 'matching version is left alone'
+ $null=New-ItemProperty -Path $regKey -Name InstallLocation -Value (Join-Path $base 'elsewhere') -PropertyType String -Force
+ $null=New-ItemProperty -Path $regKey -Name DisplayVersion -Value 'other-copy' -PropertyType String -Force
+ Check (!(Sync-HidwayRegisteredVersion $dest $regKey) -and (Get-ItemProperty -LiteralPath $regKey).DisplayVersion -ceq 'other-copy') 'entry of another installation is not touched'
+ Check (!(Sync-HidwayRegisteredVersion $dest ($regKey+'-missing'))) 'missing entry is ignored'
+}finally{Remove-Item -LiteralPath $regKey -Recurse -Force;if(-not $regParentExisted){Remove-Item -LiteralPath 'HKCU:\Software\HIDwayUpdateTests' -Force -ErrorAction SilentlyContinue}}
 Reject {& $module {Set-Variable -Scope Script -Name Repo -Value 'foreign' -Force -ErrorAction Stop}} 'repository constant cannot be configured'
 foreach($path in @((Join-Path $PSScriptRoot '..\tools\setup\hidway-updater.psm1'),(Join-Path $PSScriptRoot '..\tools\setup\hidway-updates.ps1'))){
  Check (@([IO.File]::ReadAllBytes($path) | Where-Object {$_ -gt 127}).Count -eq 0) 'pure ASCII updater source'
