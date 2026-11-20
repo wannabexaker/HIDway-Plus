@@ -49,8 +49,10 @@ first; edits that were not applied are dropped when you leave the tab. An
 invalid value on the Connection or Input tab is refused with a message in the
 window and nothing is changed. Button, Repeat source and Repeat clicks/sec are
 greyed out, with their values kept, while **Hold to repeat** is not ticked. On
-the Gaming PC route Physical and Touchpad are not available and Virtual /
-remote is always on.
+the Gaming PC route Touchpad is not available and Virtual / remote is always
+on. **Physical** there is a separate, experimental choice: this PC's own keys
+through the Pico (see *This PC's own keys through the Pico* below). It has its
+own setting and never takes the Remote PC route's Physical value.
 
 The Control tab's **Pico** line reads *On this PC*, *Partly detected* or *Not
 on this PC*. It is a display only and never changes the route or arms.
@@ -90,7 +92,7 @@ capture; no automatic elevation is performed.
 | Setting | Behavior |
 |---|---|
 | Send input to: Remote PC | Exclusive badge capture, including virtual-only source selection |
-| Send input to: Gaming PC through Pico | Capture virtual input only; native physical input remains local |
+| Send input to: Gaming PC through Pico | Capture virtual input only; native physical input remains local (unless Physical is ticked, see below) |
 | Gaming PC pointer: Native position | Default for Gaming PC: remote cursor placement stays native; keys, buttons and wheels use Pico |
 | Gaming PC pointer: Through Pico, relative | Experimental relative HID movement; pointer acceleration and DPI may change placement |
 | Hold to repeat | OFF by default; generate clicks while the selected button is held |
@@ -162,10 +164,55 @@ actual remote-driver acceptance tests.
 
 ## Same-machine loopback
 
-In Gaming PC mode, Physical and Touchpad forwarding are disabled. Selected
-injected events are consumed, and returning physical Pico HID is passed to
-Windows. Native physical input stays direct. The time-based keyboard echo
-heuristic has been removed.
+In Gaming PC mode, Touchpad forwarding is disabled and, by default, so is
+Physical. Selected injected events are consumed, and returning physical Pico
+HID is passed to Windows. Native physical input stays direct. The time-based
+keyboard echo heuristic has been removed.
+
+### This PC's own keys through the Pico (experimental)
+
+Off by default. With it on, the keyboard keys, mouse buttons and wheel of the
+Gaming PC itself also go PC → Pi → Pico → the same PC, like virtual input.
+
+**Switching it on:** Input tab → **Gaming PC** → tick **Physical** → **Apply
+and save**. The tab shows a one-line *Experimental* note while it is ticked.
+In `hidway.ini` it is `loopback_physical = 1` (a top-level key; it only acts
+when `loopback_mode = 1`). `source_physical` is not used for this, so an older
+file never switches it on. **Pico on this PC** does not change it.
+
+**How it tells the keys apart:** Windows cannot say which keyboard a key came
+from, so HIDway counts what it sends. Every key, button or wheel change sent to
+the Pico is expected back from the Pico within about 250 ms. A key that is
+expected is the Pico's and goes through to Windows; any other key is this PC's
+own and is sent to the Pico. Held keys repeat at Windows' normal repeat rate.
+Pointer movement and the horizontal wheel are never taken: they stay native.
+
+**What it needs and what it refuses:**
+
+- ARM is refused unless the Pico keyboard and mouse are found on this PC
+  (the message is in LIVE INPUT and in the recent input list).
+- If the Pico does not send back what was sent (five changes within three
+  seconds with nothing coming back), HIDway disarms and says so.
+- If one key or button is taken from this PC more than 50 times a second,
+  HIDway treats it as a loop, disarms and says so.
+- PANIC, the ARM hotkey, link-loss disarm, sleep, lock and the other
+  fail-safes work as on the other routes. The PANIC and ARM keys are read
+  by HIDway itself while it takes this PC's keys.
+
+**Limits:**
+
+- Experimental. Use it only with the Pico plugged into this PC.
+- Programs that read Raw Input (many games) still see this PC's own keyboard
+  and mouse as well as the Pico. A game that reads raw mouse input can see
+  every click twice.
+- Only six keys at once, plus modifiers (the Pico's keyboard limit); a seventh
+  key waits until one is released.
+- No guarantee for auto-repeat: repeats can be a little uneven.
+- A key held by virtual input and pressed on this PC at the same time can look
+  released to this PC early.
+- Very high latency to the Pi (well over 200 ms) makes HIDway disarm.
+- Ctrl+Alt+Del is handled by Windows before HIDway sees it; if a modifier
+  seems stuck afterwards, press it once or use PANIC.
 
 This mode cannot transform native physical mouse holds into Pico repeat:
 that requires per-device interception beyond the current low-level hooks.
@@ -200,6 +247,7 @@ Example defaults:
 
 ~~~ini
 loopback_mode = 0
+loopback_physical = 0
 virtual_click_cps = 10
 repeat_enabled = 0
 repeat_button = 0

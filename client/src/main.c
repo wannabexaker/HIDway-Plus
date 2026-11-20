@@ -21,6 +21,7 @@
 
 #include "config.h"
 #include "hidway_crypto.h"
+#include "hidway_echo.h"
 #include "hidway_input_source.h"
 #include "hidway_input_state.h"
 #include "hidway_status_order.h"
@@ -110,6 +111,7 @@ int WINAPI GdipDrawLines(void *graphics, void *pen, const HW_PointF *points, int
 #define WM_CAPTURE_MOUSE (WM_APP + 4) /* injected mouse: wp WM_*, lp packed data */
 #define WM_CAPTURE_READY (WM_APP + 5)
 #define WM_SEND_TICK (WM_APP + 6)
+#define WM_CAPTURE_PMOUSE (WM_APP + 7) /* this PC's mouse through the Pico: wp WM_*, lp mouseData */
 #define KEYF_E0 0x10000
 #define KEYF_UP 0x20000
 #define KEYF_VIRTUAL 0x40000
@@ -215,6 +217,10 @@ static struct {
 
     int armed;
     int net_ok;
+    /* Armed on the Gaming PC route with loopback_physical: this PC's own
+     * keys, buttons and wheel go through the Pico (echo credits). Latched
+     * at ARM, cleared at DISARM; every code path of that mode checks it. */
+    int loop_phys;
 
     uint8_t modifiers;
     uint8_t keys[HIDWAY_KEY_BITMAP_BYTES];
@@ -620,6 +626,15 @@ static hidway_event_frame_t input_frame(void);
 static int publish_input(void);
 static void drain_capture(void);
 
+/* Echo credits of the physical-through-Pico mode: granted here (GUI thread,
+ * from each state actually sent), taken by the hook thread. */
+static hidway_echo_t cap_echo;
+static int echo_cas(volatile uint32_t *w, uint32_t expected, uint32_t desired)
+{
+    return (uint32_t)InterlockedCompareExchange((volatile LONG *)w, (LONG)desired, (LONG)expected) == expected;
+}
+static const char LOOP_PHYS_NO_PICO[] = "Physical through the Pico: the Pico is not on this PC - not armed";
+
 /* Opt-in, bounded diagnostics: timings/counters only, never input or keys. */
 static void latency_trace(const char *event, uint32_t value, unsigned detail)
 {
@@ -659,6 +674,15 @@ static void net_send_state(uint8_t type)
             p.y = frame.y;
             p.wheel = frame.wheel;
             p.pan = frame.pan;
+        }
+        if (g.loop_phys) { /* one credit per edge the Pico will now perform */
+            hidway_echo_frame_t sent;
+            memset(&sent, 0, sizeof sent);
+            sent.mods = p.mods;
+            memcpy(sent.keys, p.keys, sizeof sent.keys);
+            sent.buttons = p.buttons;
+            sent.wheel = p.wheel;
+            hidway_echo_grant(&cap_echo, &sent, timeGetTime());
         }
     }
     uint8_t buf[HIDWAY_INPUT_PKT_LEN];
@@ -741,6 +765,16 @@ static void net_drain_status(void)
 static void set_armed(int on);
 static void invalidate_readouts(void);
 
+/* Disarm from the physical-through-Pico mode with the reason in the window:
+ * the recent input list and LIVE INPUT on the Control tab. */
+static void loop_phys_stop(const char *message)
+{
+    set_armed(0);
+    history_add('w', message);
+    snprintf(g.local_pico_notice, sizeof g.local_pico_notice, "%s", message);
+    invalidate_readouts();
+}
+
 static void net_tick(void)
 {
     if(!g.armed)return;
@@ -751,6 +785,15 @@ static void net_tick(void)
         set_armed(0);history_add('w',"Input capture/sender failed - released");return;
     }
     net_send_state(HIDWAY_MSG_STATE);
+    if (g.loop_phys && g.armed) {
+        int fault = hidway_echo_expire(&cap_echo, timeGetTime());
+        if (fault) {
+            loop_phys_stop(fault == HIDWAY_ECHO_FAULT_SILENT
+                               ? "The Pico did not return the input - auto-disarmed"
+                               : "Input loop through the Pico detected - auto-disarmed");
+            return;
+        }
+    }
     net_drain_status();
 
     uint32_t now = hidway_now_us();
@@ -1058,12 +1101,32 @@ static HWND volatile cap_badge;
 static volatile LONG cap_keyboard, cap_mouse, cap_sources;
 static volatile LONG cap_require_badge, cap_consume_virtual;
 static volatile LONG cap_route_motion;
+static volatile LONG cap_loop_phys; /* g.loop_phys for the hook thread */
 static uint8_t cap_ours[2][768]; /* scan/E0 identity, or VK identity when scan is absent */
 static uint8_t cap_key_vk[2][768]; /* retain DOWN VK across layout changes */
 static uint8_t cap_mouse_ours;
 static POINT cap_mouse_last, cap_warp_point;
 static int cap_mouse_last_valid;
 static volatile LONG cap_warp_pending;
+
+/* The echo slot of a hardware key: the HID usage (modifiers 0xE0..0xE7)
+ * that on_capture_key() sends for it, the same way the Pico's returning key
+ * maps; 0 when it sends none. */
+static unsigned loop_key_slot(unsigned vk, unsigned sc, int e0)
+{
+    if (vk == VK_PAUSE) return 0x48;
+    if (vk == VK_NUMLOCK) return 0x53;
+    if (vk == VK_SNAPSHOT) return 0x46;
+    if (vk == VK_RSHIFT) e0 = 0;
+    if (!sc || sc > 0xff) return 0;
+    uint8_t mod = hidway_sc_to_modifier((uint8_t)sc, e0 != 0);
+    if (mod) {
+        unsigned bit = 0;
+        while (!(mod & (1u << bit))) bit++;
+        return 0xE0u + bit;
+    }
+    return hidway_sc_to_usage((uint8_t)sc, e0 != 0);
+}
 
 static LRESULT CALLBACK capture_hook(int code, WPARAM wp, LPARAM lp)
 {
@@ -1076,6 +1139,27 @@ static LRESULT CALLBACK capture_hook(int code, WPARAM wp, LPARAM lp)
         int slot = injected ? 1 : 0;
         unsigned identity=k->scanCode&&k->scanCode<=255?
             (unsigned)k->scanCode+((k->flags&LLKHF_EXTENDED)?256u:0u):512u+vk;
+        if (cap_loop_phys && !injected && cap_active && cap_keyboard) {
+            /* Gaming PC, this PC's keys through the Pico: a matching echo
+             * credit means the Pico's returning key (pass), otherwise it is
+             * this PC's own key (the physical path below). */
+            unsigned echo_slot = loop_key_slot(vk, k->scanCode, (k->flags & LLKHF_EXTENDED) != 0);
+            int verdict = echo_slot ? hidway_echo_input(&cap_echo, echo_slot, up != FALSE, timeGetTime())
+                                    : HIDWAY_ECHO_PASS;
+            if (verdict == HIDWAY_ECHO_SWALLOW)
+                return 1;
+            if (verdict == HIDWAY_ECHO_OWN) {
+                if (!up) cap_key_vk[0][identity] = vk;
+                if (cap_key_vk[0][identity]) vk = cap_key_vk[0][identity];
+                cap_ours[0][identity] = (uint8_t)!up;
+                LPARAM info = (LPARAM)((k->scanCode & 0xFFFFu) | ((k->flags & LLKHF_EXTENDED) ? KEYF_E0 : 0) |
+                                       (up ? KEYF_UP : 0));
+                if(!capture_enqueue(cap_badge,WM_CAPTURE_READY,WM_CAPTURE_KEY,(WPARAM)vk,info))
+                    InterlockedExchange(&cap_active,0);
+                return 1;
+            }
+            return CallNextHookEx(NULL, code, wp, lp);
+        }
         if (cap_active && cap_keyboard && (cap_sources & source) &&
             (!cap_require_badge || GetForegroundWindow() == cap_badge) && (!up || cap_ours[slot][identity])) {
             if(!up&&!cap_ours[slot][identity])cap_key_vk[slot][identity]=vk;
@@ -1104,6 +1188,36 @@ static LRESULT CALLBACK capture_mouse_hook(int code, WPARAM wp, LPARAM lp)
             cap_mouse_last = m->pt;
             cap_mouse_last_valid = 1;
             InterlockedExchange(&cap_warp_pending, 0);
+        } else if (!injected && cap_loop_phys && cap_active && cap_mouse) {
+            /* Gaming PC, this PC's buttons and wheel through the Pico. The
+             * pointer, the horizontal wheel and every echo stay native. */
+            unsigned echo_slot = 0;
+            bool up = false;
+            int verdict = HIDWAY_ECHO_PASS;
+            switch (wp) {
+            case WM_LBUTTONUP: up = true; /* fall through */
+            case WM_LBUTTONDOWN: echo_slot = HIDWAY_ECHO_BUTTON0; break;
+            case WM_RBUTTONUP: up = true; /* fall through */
+            case WM_RBUTTONDOWN: echo_slot = HIDWAY_ECHO_BUTTON0 + 1; break;
+            case WM_MBUTTONUP: up = true; /* fall through */
+            case WM_MBUTTONDOWN: echo_slot = HIDWAY_ECHO_BUTTON0 + 2; break;
+            case WM_XBUTTONUP: up = true; /* fall through */
+            case WM_XBUTTONDOWN:
+                echo_slot = HIDWAY_ECHO_BUTTON0 + (HIWORD(m->mouseData) == XBUTTON1 ? 3 : 4);
+                break;
+            case WM_MOUSEWHEEL:
+                verdict = hidway_echo_wheel(&cap_echo, (SHORT)HIWORD(m->mouseData), timeGetTime());
+                break;
+            }
+            if (echo_slot)
+                verdict = hidway_echo_input(&cap_echo, echo_slot, up, timeGetTime());
+            if (verdict == HIDWAY_ECHO_SWALLOW)
+                return 1;
+            if (verdict == HIDWAY_ECHO_OWN) {
+                if(!capture_enqueue(cap_badge,WM_CAPTURE_READY,WM_CAPTURE_PMOUSE,wp,(LPARAM)m->mouseData))
+                    InterlockedExchange(&cap_active,0);
+                return 1;
+            }
         } else if (injected && cap_active && cap_mouse && (cap_sources & HIDWAY_SOURCE_VIRTUAL) &&
                    (!cap_require_badge || GetForegroundWindow() == cap_badge)) {
             if(wp==WM_MOUSEMOVE&&!cap_route_motion) {
@@ -1420,6 +1534,7 @@ static int capture_start(void)
     InterlockedExchange(&cap_require_badge, g.exclusive_capture);
     InterlockedExchange(&cap_consume_virtual, !g.exclusive_capture);
     InterlockedExchange(&cap_route_motion,!g.cfg.loopback_mode||g.cfg.loopback_pointer_pico);
+    InterlockedExchange(&cap_loop_phys, g.loop_phys);
     memset(g.absolute, 0, sizeof g.absolute);
     if (((g.cfg.relay_keyboard && (g.cfg.source_physical || g.cfg.source_virtual)) ||
          (g.cfg.relay_mouse && (g.cfg.source_touchpad || g.cfg.source_virtual))) && !hook_start())
@@ -1455,6 +1570,7 @@ static void capture_stop(void)
     InterlockedExchange(&cap_require_badge, 0);
     InterlockedExchange(&cap_consume_virtual, 0);
     InterlockedExchange(&cap_route_motion, 0);
+    InterlockedExchange(&cap_loop_phys, 0);
     hook_stop();
     capture_queue_clear();
     raw_input_to(NULL, 0);
@@ -1529,6 +1645,14 @@ static void set_armed(int on)
     if (on == g.armed)
         return;
     if(on&&g.options){history_add('i',"Close input options before arming");return;}
+    /* Physical keys through the Pico swallow this PC's own keyboard and get
+     * it back from the Pico: refuse unless the Pico is really on this PC. */
+    int loop_phys = on && !replay.active && g.cfg.loopback_mode && g.cfg.loopback_physical;
+    if(loop_phys&&hidway_local_pico_interfaces(g.cfg.loopback_device)!=HIDWAY_PICO_READY) {
+        history_add('w',LOOP_PHYS_NO_PICO);
+        snprintf(g.local_pico_notice,sizeof g.local_pico_notice,"%s",LOOP_PHYS_NO_PICO);
+        invalidate_readouts();badge_refresh();return;
+    }
     if(on) {
         uint32_t session=0;
         if(hidway_random((uint8_t*)&session,sizeof session)!=0) {
@@ -1536,8 +1660,12 @@ static void set_armed(int on)
         }
         if(session==g.session_id)session^=0x80000000u;
         g.session_id=session;g.seq=0;memset(&g.status_order,0,sizeof g.status_order);
+        hidway_echo_reset(&cap_echo,echo_cas);
+        g.loop_phys=loop_phys;
+        if(!strcmp(g.local_pico_notice,LOOP_PHYS_NO_PICO))g.local_pico_notice[0]=0; /* no longer true */
     }
     if (on && !g.preview && !replay.active && !capture_start()) {
+        g.loop_phys=0;InterlockedExchange(&cap_loop_phys,0);
         history_add('w', "Could not start input capture - not armed");
         badge_refresh();
         return;
@@ -1568,6 +1696,8 @@ static void set_armed(int on)
         if(!g.preview)hidway_send_clock_stop(&g.send_clock);
         if (!g.preview)
             capture_stop();
+        g.loop_phys = 0; /* every credit and ownership goes with the capture */
+        hidway_echo_reset(&cap_echo, echo_cas);
         for (int i = 0; i < 3; i++)
             net_send_state(HIDWAY_MSG_RELEASE);
         g.pps = 0;
@@ -1600,7 +1730,8 @@ static void on_capture_key(UINT vk, LPARAM info)
     bool e0 = (info & KEYF_E0) != 0;
     unsigned sc = (unsigned)(info & 0xFFFF);
     unsigned source=(info&KEYF_VIRTUAL)?HIDWAY_SOURCE_VIRTUAL:HIDWAY_SOURCE_PHYSICAL;
-    if(!(input_source_mask()&source)||vk>255)return;
+    int accepted=(input_source_mask()&source)||(g.loop_phys&&source==HIDWAY_SOURCE_PHYSICAL);
+    if(!accepted||vk>255)return;
     unsigned mods = held_mods();
 
     if(up) {
@@ -1756,28 +1887,28 @@ static void on_raw_mouse(HANDLE device, const RAWMOUSE *m, unsigned source)
     }
 }
 
-static void on_capture_mouse(UINT msg, LPARAM data)
+/* A mouse event from the hook: injected (Virtual), or this PC's own buttons
+ * and wheel in the physical-through-Pico mode (never pointer movement). */
+static void capture_mouse_event(unsigned source, UINT msg, LPARAM data)
 {
-    if (!g.armed || replay.active || !g.cfg.relay_mouse || !g.cfg.source_virtual)
-        return;
     switch (msg) {
     case WM_MOUSEMOVE:
         g.cum_x += (SHORT)LOWORD(data);
         g.cum_y += (SHORT)HIWORD(data);
         break;
-    case WM_LBUTTONDOWN: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_DOWN, 0, BTN_L, "Left click"); break;
-    case WM_LBUTTONUP: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_LEFT_BUTTON_UP, 0, RI_MOUSE_LEFT_BUTTON_UP, BTN_L, "Left click"); break;
-    case WM_RBUTTONDOWN: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN, 0, BTN_R, "Right click"); break;
-    case WM_RBUTTONUP: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_RIGHT_BUTTON_UP, 0, RI_MOUSE_RIGHT_BUTTON_UP, BTN_R, "Right click"); break;
-    case WM_MBUTTONDOWN: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN, 0, BTN_M, "Middle click"); break;
-    case WM_MBUTTONUP: mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_MIDDLE_BUTTON_UP, 0, RI_MOUSE_MIDDLE_BUTTON_UP, BTN_M, "Middle click"); break;
+    case WM_LBUTTONDOWN: mouse_edge(source,RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_DOWN, 0, BTN_L, "Left click"); break;
+    case WM_LBUTTONUP: mouse_edge(source,RI_MOUSE_LEFT_BUTTON_UP, 0, RI_MOUSE_LEFT_BUTTON_UP, BTN_L, "Left click"); break;
+    case WM_RBUTTONDOWN: mouse_edge(source,RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN, 0, BTN_R, "Right click"); break;
+    case WM_RBUTTONUP: mouse_edge(source,RI_MOUSE_RIGHT_BUTTON_UP, 0, RI_MOUSE_RIGHT_BUTTON_UP, BTN_R, "Right click"); break;
+    case WM_MBUTTONDOWN: mouse_edge(source,RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN, 0, BTN_M, "Middle click"); break;
+    case WM_MBUTTONUP: mouse_edge(source,RI_MOUSE_MIDDLE_BUTTON_UP, 0, RI_MOUSE_MIDDLE_BUTTON_UP, BTN_M, "Middle click"); break;
     case WM_XBUTTONDOWN:
-        if (HIWORD((DWORD)data) == XBUTTON1) mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_DOWN, 0, BTN_X1, "Mouse back");
-        else mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_DOWN, 0, BTN_X2, "Mouse forward");
+        if (HIWORD((DWORD)data) == XBUTTON1) mouse_edge(source,RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_DOWN, 0, BTN_X1, "Mouse back");
+        else mouse_edge(source,RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_DOWN, 0, BTN_X2, "Mouse forward");
         break;
     case WM_XBUTTONUP:
-        if (HIWORD((DWORD)data) == XBUTTON1) mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_BUTTON_4_UP, 0, RI_MOUSE_BUTTON_4_UP, BTN_X1, "Mouse back");
-        else mouse_edge(HIDWAY_SOURCE_VIRTUAL,RI_MOUSE_BUTTON_5_UP, 0, RI_MOUSE_BUTTON_5_UP, BTN_X2, "Mouse forward");
+        if (HIWORD((DWORD)data) == XBUTTON1) mouse_edge(source,RI_MOUSE_BUTTON_4_UP, 0, RI_MOUSE_BUTTON_4_UP, BTN_X1, "Mouse back");
+        else mouse_edge(source,RI_MOUSE_BUTTON_5_UP, 0, RI_MOUSE_BUTTON_5_UP, BTN_X2, "Mouse forward");
         break;
     case WM_MOUSEWHEEL:
         g.wheel_rem_v += (SHORT)HIWORD((DWORD)data);
@@ -1790,6 +1921,22 @@ static void on_capture_mouse(UINT msg, LPARAM data)
         g.wheel_rem_h %= WHEEL_DELTA;
         break;
     }
+}
+
+static void on_capture_mouse(UINT msg, LPARAM data)
+{
+    if (!g.armed || replay.active || !g.cfg.relay_mouse || !g.cfg.source_virtual)
+        return;
+    capture_mouse_event(HIDWAY_SOURCE_VIRTUAL, msg, data);
+}
+
+/* This PC's own buttons and wheel, consumed by the hook (Gaming PC route,
+ * physical through the Pico). Raw Input never adds them a second time. */
+static void on_capture_physical_mouse(UINT msg, LPARAM data)
+{
+    if (!g.armed || replay.active || !g.cfg.relay_mouse || !g.loop_phys || msg == WM_MOUSEMOVE)
+        return;
+    capture_mouse_event(HIDWAY_SOURCE_PHYSICAL, msg, data);
 }
 
 static void on_raw_input(HRAWINPUT h)
@@ -1839,6 +1986,7 @@ static void drain_capture(void)
         }
         if(e.kind==WM_CAPTURE_KEY)on_capture_key((UINT)e.w,e.l);
         else if(e.kind==WM_CAPTURE_MOUSE)on_capture_mouse((UINT)e.w,e.l);
+        else if(e.kind==WM_CAPTURE_PMOUSE)on_capture_physical_mouse((UINT)e.w,e.l);
     }
     if(!g.preview&&!PostMessageA(g.badge,WM_CAPTURE_READY,0,0))InterlockedExchange(&capture_fault,1);
 }
@@ -2536,13 +2684,24 @@ static void paint_input(HDC dc)
     field_frame(dc, L->repeat_cps, ID_REPEAT_CPS, rep);
     field_frame(dc, L->click_cps, ID_CLICK_CPS, 1);
 
-    char limited[96];
-    snprintf(limited, sizeof limited, "Last ARM: %lu extra click attempts limited", (unsigned long)g.last_limited);
-    text_vc(dc, g.f_label, C_TEXT3, XL, L->row_limited, limited);
+    int through_pico = loop && g.pending.loopback_physical;
+    if (through_pico) { /* Gaming PC with Physical ticked: say what it does, in one line */
+        RECT note = {XL, L->row_limited - S(10), L->input.right - S(14), L->row_limited + S(10)};
+        text_in(dc, g.f_label, C_AMBER, note, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                "Experimental: keys, buttons and wheel of this PC go through the Pico.");
+    } else {
+        char limited[96];
+        snprintf(limited, sizeof limited, "Last ARM: %lu extra click attempts limited", (unsigned long)g.last_limited);
+        text_vc(dc, g.f_label, C_TEXT3, XL, L->row_limited, limited);
+    }
 
     const char *status = g.input_status;
     if (!status[0])
-        status = g.input_dirty ? "Changes not applied yet. Apply and save disarms first, then saves."
+        status = g.input_dirty ? (through_pico ? "Changes not applied yet. Programs that read Raw Input still see "
+                                                 "this PC's own keyboard and mouse too."
+                                               : "Changes not applied yet. Apply and save disarms first, then saves.")
+               : through_pico ? "Programs that read Raw Input still see this PC's own keyboard and mouse too. "
+                                "The pointer stays native. Apply and save disarms first."
                : loop ? "Gaming PC: virtual input only; Physical and Touchpad stay local. Apply and "
                         "save disarms first; changes not applied are dropped when you leave this tab."
                       : "Apply and save disarms first; changes not applied are dropped when you leave "
@@ -2733,14 +2892,16 @@ static int is_checkbox(int id)
 }
 
 /* Input tab boxes show the edits not applied yet (g.pending); History, on
- * the Tools tab, applies at once as before. In the Gaming PC route the
- * Physical / Touchpad boxes show off and Virtual shows on: that is what the
- * route captures, whatever the boxes remember for the Remote PC route. */
+ * the Tools tab, applies at once as before. In the Gaming PC route Touchpad
+ * shows off and Virtual shows on: that is what the route captures, whatever
+ * the boxes remember for the Remote PC route. Physical there is its own
+ * setting, loopback_physical (this PC's keys through the Pico). */
 static int cb_checked(int id)
 {
     if (id == ID_CB_HIST) return g.cfg.history_enabled;
     if (id == ID_REPEAT) return g.pending.repeat_enabled;
-    if (g.cfg.loopback_mode && (id == ID_SRC_PHYSICAL || id == ID_SRC_TOUCHPAD)) return 0;
+    if (g.cfg.loopback_mode && id == ID_SRC_PHYSICAL) return g.pending.loopback_physical;
+    if (g.cfg.loopback_mode && id == ID_SRC_TOUCHPAD) return 0;
     if (g.cfg.loopback_mode && id == ID_SRC_VIRTUAL) return 1;
     if (id == ID_CB_KBD) return g.pending.relay_keyboard;
     if (id == ID_CB_MOUSE) return g.pending.relay_mouse;
@@ -3230,7 +3391,7 @@ static void input_tab_refresh(void)
     int loop = g.cfg.loopback_mode != 0, rep = g.pending.repeat_enabled != 0;
     for (int i = 0; i < 3; i++)
         if (g.src[i]) {
-            EnableWindow(g.src[i], !loop);
+            EnableWindow(g.src[i], !loop || i == 0); /* Gaming PC: Physical = through the Pico */
             InvalidateRect(g.src[i], NULL, FALSE);
         }
     if (g.pointer_route) EnableWindow(g.pointer_route, loop);
@@ -3304,6 +3465,7 @@ static int input_apply(void)
     next.source_physical=g.pending.source_physical;
     next.source_touchpad=g.pending.source_touchpad;
     next.source_virtual=g.pending.source_virtual;
+    if(next.loopback_mode)next.loopback_physical=g.pending.loopback_physical;
     next.loopback_pointer_pico=SendMessageA(g.pointer_route,CB_GETCURSEL,0,0)==1;
     next.repeat_enabled=g.pending.repeat_enabled;
     int button=(int)SendMessageA(g.repeat_button,CB_GETCURSEL,0,0);
@@ -3519,7 +3681,7 @@ static void add_tooltips(HWND hwnd)
         {g.panic, "PANIC: release every key and button immediately and disarm."},
         {g.tabs, "Control, Connection, Input, Tools. Left / Right arrows switch tabs; switching never disarms."},
         {g.profile_button[0], "Remote PC route: this PC controls the Gaming PC. Switching disarms, keeps each route's own settings and saves."},
-        {g.profile_button[1], "Gaming PC route: the Pico is connected to this PC; virtual input only. Switching disarms, keeps each route's own settings and saves."},
+        {g.profile_button[1], "Gaming PC route: the Pico is connected to this PC; virtual input, and this PC's own keys if Physical is ticked (experimental). Switching disarms, keeps each route's own settings and saves."},
         {g.input_apply, "Disarm, then apply and save the input settings of the route in use."},
         {g.monitor_button, "Open the Input Monitor: devices, live events and recordings."},
         {g.replay_button, "Load a recording and replay it through the Pi and Pico after confirmation."},
@@ -4070,10 +4232,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 break;
             case ID_CB_KBD: g.pending.relay_keyboard = !g.pending.relay_keyboard; g.input_dirty = 1; break;
             case ID_CB_MOUSE: g.pending.relay_mouse = !g.pending.relay_mouse; g.input_dirty = 1; break;
-            /* Gaming PC: Physical / Touchpad are not selectable and Virtual is
-             * forced on (the boxes are disabled; a queued click changes nothing) */
+            /* Gaming PC: Touchpad is not selectable and Virtual is forced on
+             * (the boxes are disabled; a queued click changes nothing);
+             * Physical there means this PC's keys through the Pico. */
             case ID_SRC_PHYSICAL:
-                if (!g.cfg.loopback_mode) { g.pending.source_physical = !g.pending.source_physical; g.input_dirty = 1; }
+                if (!g.cfg.loopback_mode) g.pending.source_physical = !g.pending.source_physical;
+                else g.pending.loopback_physical = !g.pending.loopback_physical;
+                g.input_dirty = 1;
+                invalidate_fields(); /* the experimental note */
                 break;
             case ID_SRC_TOUCHPAD:
                 if (!g.cfg.loopback_mode) { g.pending.source_touchpad = !g.pending.source_touchpad; g.input_dirty = 1; }

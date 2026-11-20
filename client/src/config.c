@@ -379,6 +379,8 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
             cfg->loopback_mode = atoi(val) ? 1 : 0; route_seen = 1;
         } else if (!strcmp(key, "loopback_pointer_pico")) {
             cfg->loopback_pointer_pico = atoi(val) ? 1 : 0;
+        } else if (!strcmp(key, "loopback_physical")) {
+            cfg->loopback_physical = atoi(val) ? 1 : 0;
         } else if (!strcmp(key, "virtual_click_cps")) {
             cfg->virtual_click_cps = clampi(atoi(val), 1, 25);
         } else if (!strcmp(key, "repeat_enabled")) {
@@ -466,6 +468,8 @@ int hidway_config_save(const char *path, const hidway_config_t *in)
     fprintf(f, "source_virtual = %d\n", cfg->source_virtual);
     fprintf(f, "loopback_mode = %d\n", cfg->loopback_mode);
     fprintf(f, "loopback_pointer_pico = %d\n", cfg->loopback_pointer_pico);
+    fprintf(f, "loopback_physical = %d   # Gaming PC route: this PC's keys through the Pico (experimental)\n",
+            cfg->loopback_physical);
     fprintf(f, "virtual_click_cps = %d\n", cfg->virtual_click_cps);
     fprintf(f, "repeat_enabled = %d\nrepeat_button = %d\nrepeat_cps = %d\nrepeat_sources = %d\n",
             cfg->repeat_enabled, cfg->repeat_button, cfg->repeat_cps, cfg->repeat_sources);

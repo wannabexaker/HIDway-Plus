@@ -27,6 +27,14 @@ source_virtual = 0
 loopback_mode = 0
 loopback_pointer_pico = 0
 
+# Experimental, Gaming PC route only (loopback_mode = 1): 1 also sends this
+# PC's own keyboard keys, mouse buttons and wheel through the Pico; the
+# pointer stays native. Needs the Pico plugged into this PC. Programs that
+# read Raw Input still see this PC's own keyboard and mouse as well. It is not
+# source_physical: that one belongs to the Remote PC route. See
+# docs/INPUT_SOURCES.md. The Physical box on the Input tab sets it.
+loopback_physical = 0
+
 # Record recent-input history in the UI (memory only, never written to disk).
 history_enabled = 1
 

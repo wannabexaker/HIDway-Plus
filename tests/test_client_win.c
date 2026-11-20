@@ -386,6 +386,127 @@ int main(void)
     VERIFY(capture_events.count==2&&capture_events.events[0].w=='A'&&capture_events.events[1].w=='A');
     cap_active=0;capture_queue_clear();
 
+    /* ---- Gaming PC, physical through the Pico (loopback_physical) ---- */
+    /* Off (the default): the arm guard is not consulted, hardware keys and
+     * buttons pass the hooks, physical keys are ignored, no credits. */
+    reset_client();g.armed=0;g.cfg.loopback_mode=1;g.cfg.source_physical=1; /* a leftover Remote PC choice */
+    fixture_pico=0;fixture_pico_calls=0;
+    set_armed(1);
+    VERIFY(g.armed&&!g.loop_phys&&fixture_pico_calls==0);
+    on_capture_key('A',0x1e);
+    net_send_state(HIDWAY_MSG_STATE);
+    VERIFY(!hidway_bitmap_test(g.keys,4)&&!hidway_echo_live(&cap_echo,4,false,timeGetTime())&&!cap_echo.sent.keys[0]);
+    on_capture_key('B',0x30|KEYF_VIRTUAL);
+    net_send_state(HIDWAY_MSG_STATE);
+    VERIFY(hidway_bitmap_test(g.keys,5)&&!hidway_echo_live(&cap_echo,5,false,timeGetTime())); /* no grants */
+    set_armed(0);
+    cap_active=cap_keyboard=cap_mouse=1;cap_sources=HIDWAY_SOURCE_VIRTUAL;cap_require_badge=0;cap_consume_virtual=1;
+    cap_loop_phys=0;cap_badge=NULL;memset(cap_ours,0,sizeof cap_ours);capture_queue_clear();
+    key=(KBDLLHOOKSTRUCT){0};key.vkCode='A';key.scanCode=0x1e;
+    VERIFY(capture_hook(HC_ACTION,WM_KEYDOWN,(LPARAM)&key)==0&&!capture_events.count);
+    mouse=(MSLLHOOKSTRUCT){0};
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_LBUTTONDOWN,(LPARAM)&mouse)==0&&!capture_events.count);
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_MOUSEWHEEL,(LPARAM)&mouse)==0&&!capture_events.count);
+    cap_active=0;
+    /* On: ARM is refused without the Pico on this PC, in the window. */
+    reset_client();g.armed=0;g.cfg.loopback_mode=1;g.cfg.loopback_physical=1;
+    fixture_pico=HIDWAY_PICO_KEYBOARD;fixture_pico_calls=0;
+    set_armed(1);
+    VERIFY(!g.armed&&!g.loop_phys&&fixture_pico_calls==1&&output_count==0&&strstr(g.local_pico_notice,"not on this PC"));
+    fixture_pico=HIDWAY_PICO_READY;
+    set_armed(1);
+    VERIFY(g.armed&&g.loop_phys&&output_count==1&&!g.local_pico_notice[0]);
+    /* this PC's keys go through the existing physical path; every state
+     * actually sent grants one credit per edge */
+    on_capture_key('A',0x1e);
+    g.events.shown_at-=HIDWAY_KEY_DWELL_MS;
+    net_send_state(HIDWAY_MSG_STATE);
+    VERIFY(hidway_bitmap_test(g.keys,4)&&hidway_bitmap_test(output[output_count-1].keys,4));
+    VERIFY(hidway_echo_live(&cap_echo,4,false,timeGetTime())==1&&cap_echo.pico_down[4]);
+    on_capture_key('A',0x1e|KEYF_UP);
+    g.events.shown_at-=HIDWAY_KEY_DWELL_MS;
+    net_send_state(HIDWAY_MSG_STATE);
+    VERIFY(!hidway_bitmap_test(output[output_count-1].keys,4)&&hidway_echo_live(&cap_echo,4,true,timeGetTime())==1);
+    /* this PC's buttons and wheel, never Raw Input for them */
+    on_capture_physical_mouse(WM_RBUTTONDOWN,0);
+    VERIFY(g.buttons==BTN_R);
+    on_capture_physical_mouse(WM_RBUTTONUP,0);
+    on_capture_physical_mouse(WM_MOUSEWHEEL,MAKELPARAM(0,120));
+    on_capture_physical_mouse(WM_MOUSEMOVE,MAKELPARAM(50,50));
+    VERIFY(!g.buttons&&g.cum_wheel==1&&!g.cum_x);
+    RAWMOUSE raw={0};raw.usButtonFlags=RI_MOUSE_LEFT_BUTTON_DOWN;raw.lLastX=40;
+    on_raw_mouse((HANDLE)1,&raw,HIDWAY_SOURCE_PHYSICAL);
+    VERIFY(!g.buttons&&!g.cum_x);
+    /* ARM / PANIC: this PC's PANIC chord is consumed and seen by HIDway
+     * itself, exactly as on the Remote PC route */
+    g.cfg.panic.vk=VK_END;g.cfg.panic.mods=MOD_CONTROL|MOD_ALT|MOD_SHIFT;
+    g.cfg.toggle.vk=VK_F12;g.cfg.toggle.mods=MOD_CONTROL|MOD_SHIFT;
+    on_capture_key(VK_LCONTROL,0x1d);on_capture_key(VK_LMENU,0x38);on_capture_key(VK_LSHIFT,0x2a);
+    VERIFY(g.armed&&g.modifiers==7);
+    on_capture_key(VK_END,0x4f|KEYF_E0);
+    VERIFY(!g.armed&&!g.loop_phys&&output[output_count-1].type==HIDWAY_MSG_RELEASE&&!g.modifiers);
+    VERIFY(!hidway_echo_live(&cap_echo,4,true,timeGetTime())&&!cap_echo.pico_down[0xE0]); /* cleared */
+    set_armed(1);VERIFY(g.armed&&g.loop_phys);
+    on_capture_key(VK_LCONTROL,0x1d);on_capture_key(VK_LSHIFT,0x2a);on_capture_key(VK_F12,0x58);
+    VERIFY(!g.armed&&!g.loop_phys);
+    set_armed(1);wnd_proc(NULL,WM_HOTKEY,HK_PANIC,0);VERIFY(!g.armed&&!g.loop_phys);
+    set_armed(1);wnd_proc(NULL,WM_HOTKEY,HK_TOGGLE,0);VERIFY(!g.armed&&!g.loop_phys);
+    /* Guard: edges the Pico never answers disarm, with the reason in the window. */
+    set_armed(1);g.armed_at_ms=timeGetTime();g.local_pico_notice[0]=0;
+    {
+        uint8_t three[]={4,5,6};hidway_echo_frame_t f;memset(&f,0,sizeof f);
+        for(int i=0;i<3;i++)hidway_bitmap_set(f.keys,three[i]);
+        hidway_echo_frame_t empty;memset(&empty,0,sizeof empty);
+        hidway_echo_grant(&cap_echo,&f,timeGetTime()-1000);hidway_echo_grant(&cap_echo,&empty,timeGetTime()-990);
+    }
+    net_tick();
+    VERIFY(!g.armed&&!g.loop_phys&&strstr(g.local_pico_notice,"did not return"));
+    /* Guard: an implausible rate of one physical key (an input loop). */
+    set_armed(1);g.armed_at_ms=timeGetTime();
+    cap_echo.loop_slot=5;
+    net_tick();
+    VERIFY(!g.armed&&strstr(g.local_pico_notice,"loop")&&!cap_echo.loop_slot);
+    /* Hooks, mode on: hardware keys and buttons are classified by the credits;
+     * pointer movement and the horizontal wheel stay native. */
+    reset_client();hidway_echo_reset(&cap_echo,echo_cas);InterlockedExchange(&capture_generation,0);
+    cap_active=cap_keyboard=cap_mouse=1;cap_sources=HIDWAY_SOURCE_VIRTUAL;cap_require_badge=0;cap_consume_virtual=1;
+    cap_loop_phys=1;cap_badge=NULL;memset(cap_ours,0,sizeof cap_ours);memset(cap_key_vk,0,sizeof cap_key_vk);
+    capture_queue_clear();
+    key=(KBDLLHOOKSTRUCT){0};key.vkCode='A';key.scanCode=0x1e;
+    VERIFY(capture_hook(HC_ACTION,WM_KEYDOWN,(LPARAM)&key)==1&&capture_events.count==1&&
+           capture_events.events[0].kind==WM_CAPTURE_KEY&&!(capture_events.events[0].l&KEYF_VIRTUAL)&&cap_ours[0][0x1e]);
+    {
+        hidway_echo_frame_t f;memset(&f,0,sizeof f);hidway_bitmap_set(f.keys,4);f.buttons=BTN_L;f.wheel=1;
+        hidway_echo_grant(&cap_echo,&f,timeGetTime());
+    }
+    VERIFY(capture_hook(HC_ACTION,WM_KEYDOWN,(LPARAM)&key)==0&&capture_events.count==1); /* the echo */
+    key.flags=LLKHF_UP;
+    VERIFY(capture_hook(HC_ACTION,WM_KEYUP,(LPARAM)&key)==1&&capture_events.count==2&&!cap_ours[0][0x1e]&&
+           (capture_events.events[1].l&KEYF_UP));
+    key.vkCode=VK_NUMLOCK;key.scanCode=0x45;key.flags=LLKHF_EXTENDED; /* hook codes off the Set-1 table */
+    VERIFY(loop_key_slot(VK_NUMLOCK,0x45,1)==0x53&&loop_key_slot(VK_PAUSE,0x45,0)==0x48&&
+           loop_key_slot(VK_RSHIFT,0x36,1)==0xE5&&loop_key_slot(VK_LCONTROL,0x1d,0)==0xE0&&loop_key_slot(0,0,0)==0);
+    key.vkCode=0xFF;key.scanCode=0;key.flags=0; /* no usage: passes as before */
+    VERIFY(capture_hook(HC_ACTION,WM_KEYDOWN,(LPARAM)&key)==0&&capture_events.count==2);
+    key.vkCode='C';key.scanCode=0x2e;key.flags=LLKHF_INJECTED; /* virtual input: unchanged */
+    VERIFY(capture_hook(HC_ACTION,WM_KEYDOWN,(LPARAM)&key)==1&&capture_events.count==3&&
+           (capture_events.events[2].l&KEYF_VIRTUAL));
+    mouse=(MSLLHOOKSTRUCT){0};
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_LBUTTONDOWN,(LPARAM)&mouse)==0&&capture_events.count==3); /* echo */
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_RBUTTONDOWN,(LPARAM)&mouse)==1&&capture_events.count==4&&
+           capture_events.events[3].kind==WM_CAPTURE_PMOUSE);
+    mouse.mouseData=(DWORD)MAKELONG(0,120);
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_MOUSEWHEEL,(LPARAM)&mouse)==0&&capture_events.count==4); /* echo */
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_MOUSEWHEEL,(LPARAM)&mouse)==1&&capture_events.count==5);
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_MOUSEHWHEEL,(LPARAM)&mouse)==0&&capture_events.count==5);
+    mouse.mouseData=0;mouse.pt.x=5;
+    VERIFY(capture_mouse_hook(HC_ACTION,WM_MOUSEMOVE,(LPARAM)&mouse)==0&&capture_events.count==5);
+    /* the consumed events reach the physical path */
+    g.loop_phys=1;g.cfg.loopback_mode=1;g.cfg.loopback_physical=1;
+    drain_capture();
+    VERIFY(g.buttons==BTN_R&&g.cum_wheel==1&&hidway_bitmap_test(g.keys,6)&&!hidway_bitmap_test(g.keys,4));
+    cap_active=0;cap_loop_phys=0;capture_queue_clear();
+
     /* The visible HUD button uses the same production preset and does not
      * ARM, create a capture hook, send packets, or change the relay address. */
     reset_client();g.preview=0;g.armed=0;g.dpi=96;g.inst=GetModuleHandleA(NULL);
@@ -708,8 +829,10 @@ int main(void)
     VERIFY(g.cfg.source_virtual&&!g.cfg.source_physical&&!g.cfg.source_touchpad&&!g.cfg.loopback_pointer_pico);
     VERIFY(!g.cfg.repeat_enabled&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&g.cfg.repeat_cps==12&&g.cfg.virtual_click_cps==9);
     VERIFY(profile_matches(&g.cfg.profiles[HIDWAY_PROFILE_REMOTE],&remote));
-    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&!IsWindowEnabled(g.src[0])&&!IsWindowEnabled(g.src[1])&&
-           !IsWindowEnabled(g.src[2])&&IsWindowEnabled(g.pointer_route)&&cb_checked(ID_SRC_VIRTUAL)&&!cb_checked(ID_SRC_PHYSICAL));
+    /* Physical stays available there: it is loopback_physical (off), never source_physical */
+    VERIFY(input_source_mask()==HIDWAY_SOURCE_VIRTUAL&&IsWindowEnabled(g.src[0])&&!IsWindowEnabled(g.src[1])&&
+           !IsWindowEnabled(g.src[2])&&IsWindowEnabled(g.pointer_route)&&cb_checked(ID_SRC_VIRTUAL)&&!cb_checked(ID_SRC_PHYSICAL)&&
+           !g.cfg.loopback_physical);
     /* Gaming PC: Virtual cannot be switched off, even by a queued click. */
     wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_VIRTUAL,BN_CLICKED),(LPARAM)g.src[2]);
     VERIFY(g.pending.source_virtual&&!g.input_dirty);
@@ -745,6 +868,46 @@ int main(void)
     VERIFY(!memcmp(&before,&g.cfg,sizeof before)&&g.input_error&&strstr(g.input_status,"Could not save"));
     fixture_save_ok=1;hidway_net_close();
 
+    /* ---- Physical on the Gaming PC route: bound to loopback_physical, never
+     * to source_physical; applied only with Apply and save. ---- */
+    ui_state();g.preview=0;g.cfg.source_physical=1;
+    select_tab(TAB_INPUT);
+    VERIFY(cb_checked(ID_SRC_PHYSICAL)&&!g.cfg.loopback_physical); /* Remote PC: source_physical */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_GAMING,BN_CLICKED),(LPARAM)g.profile_button[1]);
+    VERIFY(g.cfg.loopback_mode&&!g.cfg.loopback_physical&&!cb_checked(ID_SRC_PHYSICAL)&&IsWindowEnabled(g.src[0])&&
+           !IsWindowEnabled(g.src[1])&&!cb_checked(ID_SRC_TOUCHPAD)&&g.cfg.profiles[HIDWAY_PROFILE_REMOTE].source_physical);
+    int saves=fixture_saves;
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_PHYSICAL,BN_CLICKED),(LPARAM)g.src[0]);
+    VERIFY(g.pending.loopback_physical&&!g.cfg.loopback_physical&&g.input_dirty&&cb_checked(ID_SRC_PHYSICAL)&&
+           g.pending.source_physical==g.cfg.source_physical&&fixture_saves==saves);
+    { /* the note is painted on the Input tab */
+        HDC sdc=GetDC(NULL),mdc=CreateCompatibleDC(sdc);
+        HBITMAP bm=CreateCompatibleBitmap(sdc,g.L.W,g.L.H);HGDIOBJ ob=SelectObject(mdc,bm);
+        RECT all={0,0,g.L.W,g.L.H};paint_content(mdc,all);
+        SelectObject(mdc,ob);DeleteObject(bm);DeleteDC(mdc);ReleaseDC(NULL,sdc);
+    }
+    /* leaving the tab drops it, like every other Input-tab choice */
+    select_tab(TAB_TOOLS);select_tab(TAB_INPUT);
+    VERIFY(!g.pending.loopback_physical&&!cb_checked(ID_SRC_PHYSICAL)&&!g.cfg.loopback_physical);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_PHYSICAL,BN_CLICKED),(LPARAM)g.src[0]);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(g.cfg.loopback_physical&&fixture_saved.loopback_physical&&!g.cfg.source_physical&&!g.input_error&&
+           g.cfg.source_virtual&&input_source_mask()==HIDWAY_SOURCE_VIRTUAL);
+    /* Remote PC shows its own source_physical; the Gaming PC value is kept */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_REMOTE,BN_CLICKED),(LPARAM)g.profile_button[0]);
+    VERIFY(!g.cfg.loopback_mode&&g.cfg.source_physical&&cb_checked(ID_SRC_PHYSICAL)&&g.cfg.loopback_physical&&
+           fixture_saved.loopback_physical);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_PHYSICAL,BN_CLICKED),(LPARAM)g.src[0]);
+    VERIFY(!g.pending.source_physical&&g.pending.loopback_physical&&!cb_checked(ID_SRC_PHYSICAL));
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_PHYSICAL,BN_CLICKED),(LPARAM)g.src[0]); /* back on */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_PROFILE_GAMING,BN_CLICKED),(LPARAM)g.profile_button[1]);
+    VERIFY(g.cfg.loopback_mode&&cb_checked(ID_SRC_PHYSICAL)&&g.cfg.profiles[HIDWAY_PROFILE_REMOTE].source_physical);
+    /* untick and apply on the Gaming PC route */
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_SRC_PHYSICAL,BN_CLICKED),(LPARAM)g.src[0]);
+    wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_INPUT_APPLY,BN_CLICKED),(LPARAM)g.input_apply);
+    VERIFY(!g.cfg.loopback_physical&&!fixture_saved.loopback_physical&&!cb_checked(ID_SRC_PHYSICAL));
+    hidway_net_close();
+
     /* ---- Pico on this PC selects the Gaming PC route with its own saved
      * values, shows the result on Control and never ARMs. ---- */
     ui_state();g.preview=0;fixture_pico=HIDWAY_PICO_READY;
@@ -756,6 +919,12 @@ int main(void)
     VERIFY(g.tab==TAB_CONTROL&&fixture_saves==1&&g.cfg.loopback_mode&&g.cfg.loopback_pointer_pico&&g.cfg.repeat_enabled);
     VERIFY(g.cfg.source_virtual&&g.cfg.repeat_sources==HIDWAY_SOURCE_VIRTUAL&&!g.armed&&output_count==0&&
            strstr(g.local_pico_notice,"through Pico"));
+    /* Pico on this PC never switches physical-through-Pico on or off. */
+    for(int on=0;on<2;on++) {
+        ui_state();g.preview=0;fixture_pico=HIDWAY_PICO_READY;g.cfg.loopback_physical=on;
+        wnd_proc(g.hwnd,WM_COMMAND,MAKEWPARAM(ID_LOCAL_PICO,BN_CLICKED),(LPARAM)g.local_pico_button);
+        VERIFY(fixture_saves==1&&g.cfg.loopback_mode&&g.cfg.loopback_physical==on&&fixture_saved.loopback_physical==on&&!g.armed);
+    }
     /* A Gaming PC route with another relay address is refused, not rewritten. */
     ui_state();g.preview=0;routes=g.cfg;
     hidway_profile_select(&routes,HIDWAY_PROFILE_GAMING);strcpy(routes.target,"127.0.0.1");
