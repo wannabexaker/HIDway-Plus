@@ -17,6 +17,8 @@ add_custom_target(hidway_setup_payload ALL
         ${CMAKE_SOURCE_DIR}/LICENSE "$<TARGET_FILE_DIR:HIDway-Setup>"
     DEPENDS HIDway-Setup VERBATIM)
 add_test(NAME hidway_setup_bootstrap COMMAND HIDway-Setup --smoke-test)
+# The launcher ends a hung wizard itself after 120 s; CTest's limit sits above that.
+set_tests_properties(hidway_setup_bootstrap PROPERTIES TIMEOUT 180)
 add_test(NAME hidway_setup_windows COMMAND "$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/powershell.exe"
     -NoProfile -STA -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tests/test_setup_win.ps1"
     -Work "${CMAKE_CURRENT_BINARY_DIR}/setup-tests")

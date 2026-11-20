@@ -21,6 +21,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,LPWSTR command,int sho
         MessageBoxW(NULL,L"Cannot start the HIDway setup wizard. Extract the whole package first.",L"HIDway Setup",MB_OK|MB_ICONERROR);return 1;
     }
     CloseHandle(process.hThread);DWORD result=0;
-    if(smoke){if(WaitForSingleObject(process.hProcess,15000)!=WAIT_OBJECT_0){TerminateProcess(process.hProcess,1);result=1;}else GetExitCodeProcess(process.hProcess,&result);}
+    /* A cold PowerShell and WPF start took 6 to 15 s on shared CI runners; the limit only has to end a hung wizard. */
+    if(smoke){if(WaitForSingleObject(process.hProcess,120000)!=WAIT_OBJECT_0){TerminateProcess(process.hProcess,1);result=3;}else GetExitCodeProcess(process.hProcess,&result);}
     CloseHandle(process.hProcess);return (int)result;
 }
