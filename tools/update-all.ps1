@@ -82,7 +82,8 @@ if (-not $Module) {
     if (-not (Test-Path -LiteralPath $Module)) { $Module = Join-Path $PSScriptRoot 'setup\hidway-updater.psm1' }
 }
 $Module = (Resolve-Path -LiteralPath $Module).Path
-if ($ThisPCOnly) { exit (Update-ThisPC $Dir $Module) }
+# The result also goes out as a marker line: a remote shell does not always pass the exit code on.
+if ($ThisPCOnly) { $result = Update-ThisPC $Dir $Module; Say "##hidway-result=$result"; exit $result }
 
 # Saved choices: key = value lines; parameters given on the command line win.
 $saved = Join-Path $PSScriptRoot 'update-all.local.ini'
@@ -110,9 +111,11 @@ $scp = Join-Path $env:SystemRoot 'System32\OpenSSH\scp.exe'
 $worst = 0
 function Add-Result([int]$Code) { if ($Code -ne 0 -and ($script:worst -eq 0 -or $Code -eq 1)) { $script:worst = $Code } }
 # Runs a native program without its error stream ending the script; returns its exit code.
+# A result marker printed by the remote part is kept in $script:mark instead of being shown.
 function Invoke-Remote([string]$Program, [string[]]$Arguments, [string]$Prefix = '') {
     $ErrorActionPreference = 'Continue'
-    & $Program @Arguments 2>$null | ForEach-Object { Say "$Prefix$_" }
+    $script:mark = $null
+    & $Program @Arguments 2>$null | ForEach-Object { if ($_ -match '^##hidway-result=([012])\s*\z') { $script:mark = [int]$Matches[1] } else { Say "$Prefix$_" } }
     return $LASTEXITCODE
 }
 
@@ -139,7 +142,8 @@ if ($RemotePC) {
                 if ($RemoteDir) { $remote += @('-Dir', $RemoteDir) }
                 if ($CheckOnly) { $remote += '-CheckOnly' }
                 if ($AllowPreview) { $remote += '-AllowPreview' }
-                $code = Invoke-Remote $ssh ($base + $remote)
+                $null = Invoke-Remote $ssh ($base + $remote)
+                if ($null -ne $script:mark) { $code = $script:mark } else { Say "  result     NOT UPDATED: $RemotePC did not report a result" }
             }
         } finally {
             $null = Invoke-Remote $ssh ($base + @('cmd', '/c', 'rmdir', '/s', '/q', $stage))
