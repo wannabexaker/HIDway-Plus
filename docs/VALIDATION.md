@@ -1,5 +1,41 @@
 # Validation
 
+## Installer fixes and window layout (2026-11-20)
+
+Before any change the working tree was built and all 11 CTest groups passed;
+that state is commit `f452667`. After the changes the Windows Release build
+passes with warnings treated as errors and all **11 CTest groups** pass again.
+The Linux installer suite `tests/deploy/test_install.sh` passes **74 checks**
+under WSL with stubbed git/make/systemctl. That WSL has no compiler, so the
+relay build, `make check` and the relay fail-safe tests were **not** run for
+this change; `relay/hidwayd.c` and `common/` were not modified.
+
+Each reported installer defect was reproduced before the fix and re-run after:
+
+| Defect | Before | After |
+|---|---|---|
+| Relay installer copied alone to the Pi | stopped at the missing example file, or rewrote the configuration and then failed | completes using the files of its checkout; refuses before touching `/etc/hidway` when they are missing |
+| Re-running the Pi step | serial device overwritten with `/dev/ttyUSB0` | existing device kept; only the new sender is added |
+| Sunshine input step | `sunshine.conf` emptied, empty backup | other lines kept, backup equals the original |
+| Setup guide from the installed folder | blocked at the Windows step | continues to the network, Pi and Pico steps |
+| OneDrive folder | refused as "junction or symbolic link" | refused with a OneDrive notice and the remedy, also when detected only by its reparse point |
+| Host, user, IPv4 with a trailing newline | accepted | rejected |
+
+The new client was started on the development PC in preview mode and once in
+normal mode, disarmed, with a copy of a real configuration: it reached the
+relay, showed every setting, switched between the full and compact layout,
+opened and cancelled Input options and closed normally. The saved file kept
+all 25 existing keys unchanged and gained `compact = 0`. All six wizard pages
+render; the network page now fits without scrolling.
+
+Not exercised: ARM and real input through the Pi and Pico, the SSH relay
+installation against a real Pi, the elevated Sunshine step, a human clicking
+through the wizard, tooltips and the monitor's Record tint on screen, a real
+1366x768 or mixed-DPI display, and the Linux relay build. The off-screen
+`--shot` capture gives blank images for the compact and options previews; the
+windows themselves render correctly on screen. No firmware, relay or capture
+code changed, and no package was installed over the working installation.
+
 ## Main-window same-PC button (2026-10-30)
 
 The main HUD exposes **Pico on this PC** beside ARM. It shares the existing
