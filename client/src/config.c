@@ -173,22 +173,162 @@ static int clampi(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* 1/0 as written by save, plus the usual words; anything else is off. */
-static int parse_flag(const char *v)
+/* ------------------------------------------------------- route profiles */
+
+/* Same bit as HIDWAY_SOURCE_VIRTUAL (common/hidway_input_source.h). */
+#define PROFILE_SOURCE_VIRTUAL 4
+
+enum {
+    PF_TARGET, PF_PORT, PF_KEYBOARD, PF_MOUSE, PF_PHYSICAL, PF_TOUCHPAD, PF_VIRTUAL,
+    PF_POINTER, PF_REPEAT, PF_REPEAT_BUTTON, PF_REPEAT_CPS, PF_REPEAT_SOURCES, PF_CLICK_CPS,
+    PF_COUNT
+};
+static const char *const PROFILE_KEYS[PF_COUNT] = {
+    "target", "port", "relay_keyboard", "relay_mouse", "source_physical", "source_touchpad",
+    "source_virtual", "loopback_pointer_pico", "repeat_enabled", "repeat_button", "repeat_cps",
+    "repeat_sources", "virtual_click_cps"};
+static const char *const PROFILE_PREFIX[2] = {"remote.", "gaming."};
+
+static int *profile_int(hidway_route_profile_t *p, int field)
 {
-    if (!_stricmp(v, "true") || !_stricmp(v, "yes") || !_stricmp(v, "on"))
-        return 1;
-    return atoi(v) ? 1 : 0;
+    switch (field) {
+    case PF_PORT: return &p->port;
+    case PF_KEYBOARD: return &p->relay_keyboard;
+    case PF_MOUSE: return &p->relay_mouse;
+    case PF_PHYSICAL: return &p->source_physical;
+    case PF_TOUCHPAD: return &p->source_touchpad;
+    case PF_VIRTUAL: return &p->source_virtual;
+    case PF_POINTER: return &p->loopback_pointer_pico;
+    case PF_REPEAT: return &p->repeat_enabled;
+    case PF_REPEAT_BUTTON: return &p->repeat_button;
+    case PF_REPEAT_CPS: return &p->repeat_cps;
+    case PF_REPEAT_SOURCES: return &p->repeat_sources;
+    case PF_CLICK_CPS: return &p->virtual_click_cps;
+    default: return NULL;
+    }
 }
+
+/* Parse one route value with the same rules as the top-level key.
+ * Returns 1 when the value was taken. */
+static int profile_parse(hidway_route_profile_t *p, int field, const char *val)
+{
+    if (field == PF_TARGET) {
+        if (!*val)
+            return 0;
+        strncpy(p->target, val, sizeof p->target - 1);
+        p->target[sizeof p->target - 1] = 0;
+        return 1;
+    }
+    int *v = profile_int(p, field), n = atoi(val);
+    switch (field) {
+    case PF_PORT: *v = clampi(n, 1, 65535); break;
+    case PF_REPEAT_BUTTON: *v = clampi(n, 0, 4); break;
+    case PF_REPEAT_CPS: case PF_CLICK_CPS: *v = clampi(n, 1, 25); break;
+    case PF_REPEAT_SOURCES: *v = clampi(n, 1, 7); break;
+    default: *v = n ? 1 : 0; break;
+    }
+    return 1;
+}
+
+static int profile_field(const char *key)
+{
+    for (int i = 0; i < PF_COUNT; i++)
+        if (!strcmp(key, PROFILE_KEYS[i]))
+            return i;
+    return -1;
+}
+
+static void profile_from_flat(hidway_route_profile_t *p, const hidway_config_t *c)
+{
+    memset(p, 0, sizeof *p);
+    p->valid = 1;
+    memcpy(p->target, c->target, sizeof p->target);
+    p->port = c->port;
+    p->relay_keyboard = c->relay_keyboard;
+    p->relay_mouse = c->relay_mouse;
+    p->source_physical = c->source_physical;
+    p->source_touchpad = c->source_touchpad;
+    p->source_virtual = c->source_virtual;
+    p->loopback_pointer_pico = c->loopback_pointer_pico;
+    p->repeat_enabled = c->repeat_enabled;
+    p->repeat_button = c->repeat_button;
+    p->repeat_cps = c->repeat_cps;
+    p->repeat_sources = c->repeat_sources;
+    p->virtual_click_cps = c->virtual_click_cps;
+}
+
+static void profile_to_flat(hidway_config_t *c, const hidway_route_profile_t *p)
+{
+    memcpy(c->target, p->target, sizeof c->target);
+    c->target[sizeof c->target - 1] = 0;
+    c->port = p->port;
+    c->relay_keyboard = p->relay_keyboard;
+    c->relay_mouse = p->relay_mouse;
+    c->source_physical = p->source_physical;
+    c->source_touchpad = p->source_touchpad;
+    c->source_virtual = p->source_virtual;
+    c->loopback_pointer_pico = p->loopback_pointer_pico;
+    c->repeat_enabled = p->repeat_enabled;
+    c->repeat_button = p->repeat_button;
+    c->repeat_cps = p->repeat_cps;
+    c->repeat_sources = p->repeat_sources;
+    c->virtual_click_cps = p->virtual_click_cps;
+}
+
+/* Create route `mode` from the values in use: same relay address and port,
+ * same speeds. Gaming PC starts as the "Pico on this PC" preset (virtual
+ * input, keyboard and mouse, native pointer, repeat off); Remote PC keeps
+ * the source choices that the Gaming PC route preserved for it, and falls
+ * back to Physical when none of them is on. */
+static void profile_derive(hidway_config_t *c, int mode)
+{
+    hidway_route_profile_t *p = &c->profiles[mode];
+    profile_from_flat(p, c);
+    if (mode == HIDWAY_PROFILE_GAMING) {
+        p->relay_keyboard = p->relay_mouse = 1;
+        p->source_virtual = 1;
+        p->source_physical = p->source_touchpad = 0;
+        p->loopback_pointer_pico = 0;
+        p->repeat_enabled = 0;
+        p->repeat_sources = PROFILE_SOURCE_VIRTUAL;
+    } else if (!p->source_physical && !p->source_touchpad && !p->source_virtual) {
+        p->source_physical = 1;
+    }
+}
+
+void hidway_profile_store(hidway_config_t *cfg)
+{
+    int mode = cfg->loopback_mode ? 1 : 0;
+    profile_from_flat(&cfg->profiles[mode], cfg);
+}
+
+void hidway_profile_select(hidway_config_t *cfg, int mode)
+{
+    mode = mode ? 1 : 0;
+    hidway_profile_store(cfg);
+    if (!cfg->profiles[mode].valid)
+        profile_derive(cfg, mode);
+    profile_to_flat(cfg, &cfg->profiles[mode]);
+    cfg->loopback_mode = mode;
+}
+
+/* ---------------------------------------------------------------- load */
 
 int hidway_config_load(const char *path, hidway_config_t *cfg)
 {
     set_defaults(cfg);
+    hidway_profile_store(cfg);
+    profile_derive(cfg, HIDWAY_PROFILE_GAMING);
 
     FILE *f = fopen(path, "r");
     if (!f)
         return 0;
 
+    /* Prefixed route values are collected first and laid over the derived
+     * route once the top-level values (and so the route in use) are known. */
+    hidway_route_profile_t prefixed[2];
+    unsigned prefixed_seen[2] = {0, 0};
+    memset(prefixed, 0, sizeof prefixed);
     int route_seen = 0;
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -204,6 +344,17 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
         trim(val);
         if (!*key)
             continue;
+
+        int prefixed_profile = -1;
+        for (int p = 0; p < 2; p++)
+            if (!strncmp(key, PROFILE_PREFIX[p], strlen(PROFILE_PREFIX[p])))
+                prefixed_profile = p;
+        if (prefixed_profile >= 0) {
+            int field = profile_field(key + strlen(PROFILE_PREFIX[prefixed_profile]));
+            if (field >= 0 && profile_parse(&prefixed[prefixed_profile], field, val))
+                prefixed_seen[prefixed_profile] |= 1u << field;
+            continue;
+        }
 
         if (!strcmp(key, "target") && *val) {
             strncpy(cfg->target, val, sizeof cfg->target - 1);
@@ -259,7 +410,7 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
         } else if (!strcmp(key, "badge_y")) {
             cfg->badge_y = (int)strtol(val, NULL, 10);
         } else if (!strcmp(key, "compact")) {
-            cfg->compact = parse_flag(val);
+            /* written by 0.4.x for its compact layout; the tabbed window has none */
         } else if (!strcmp(key, "loopback_device")) {
             strncpy(cfg->loopback_device, val, sizeof cfg->loopback_device - 1);
             cfg->loopback_device[sizeof cfg->loopback_device - 1] = 0;
@@ -271,11 +422,33 @@ int hidway_config_load(const char *path, hidway_config_t *cfg)
     fclose(f);
     if (!route_seen) /* preserve old virtual-only loopback once during migration */
         cfg->loopback_mode = cfg->source_virtual && !cfg->source_physical && !cfg->source_touchpad;
+
+    /* The top-level keys always win for the route in use: the setup wizard,
+     * hidway-probe and older clients read and write only those. */
+    int active = cfg->loopback_mode ? 1 : 0, other = !active;
+    hidway_profile_store(cfg);
+    profile_derive(cfg, other);
+    for (int field = 0; field < PF_COUNT; field++) {
+        if (!(prefixed_seen[other] & (1u << field)))
+            continue;
+        if (field == PF_TARGET)
+            memcpy(cfg->profiles[other].target, prefixed[other].target, sizeof prefixed[other].target);
+        else
+            *profile_int(&cfg->profiles[other], field) = *profile_int(&prefixed[other], field);
+    }
     return 1;
 }
 
-int hidway_config_save(const char *path, const hidway_config_t *cfg)
+int hidway_config_save(const char *path, const hidway_config_t *in)
 {
+    /* The route in use is written from the flat values, never from a stale
+     * copy; the other route is written as remembered (or derived). */
+    hidway_config_t copy = *in;
+    const hidway_config_t *cfg = &copy;
+    SecureZeroMemory(copy.key_hex, sizeof copy.key_hex); /* written from `in`; no stack copy */
+    hidway_profile_store(&copy);
+    if (!copy.profiles[!copy.loopback_mode].valid)
+        profile_derive(&copy, !copy.loopback_mode);
     char temporary[MAX_PATH];
     if(snprintf(temporary,sizeof temporary,"%s.tmp",path)<0||strlen(path)+4>=sizeof temporary)return 0;
     FILE *f = fopen(temporary, "w");
@@ -312,16 +485,23 @@ int hidway_config_save(const char *path, const hidway_config_t *cfg)
         fprintf(f, "badge_x = %d\n", cfg->badge_x);
         fprintf(f, "badge_y = %d\n", cfg->badge_y);
     }
-    fprintf(f, "compact = %d   # 1 = compact window: no recent list or settings fields\n", cfg->compact);
     if (cfg->window_x != INT_MIN && cfg->window_y != INT_MIN) {
         fprintf(f, "window_x = %d\n", cfg->window_x);
         fprintf(f, "window_y = %d\n", cfg->window_y);
     }
     fprintf(f, "\n# Ignore this Raw Input device path token to prevent Pico mouse loopback.\n");
     fprintf(f, "loopback_device = %s\n", cfg->loopback_device);
-    if (cfg->key_hex[0]) /* keep the end-to-end key across saves */
+    if (in->key_hex[0]) /* keep the end-to-end key across saves */
         fprintf(f, "\n# End-to-end key, same as the relay's key file. Keep secret.\nkey = %s\n",
-                cfg->key_hex);
+                in->key_hex);
+    fprintf(f, "\n# Route profiles. The keys above always describe the route in use\n"
+               "# (loopback_mode); each route also keeps its own copy here.\n");
+    for (int p = 0; p < 2; p++) {
+        hidway_route_profile_t *r = &copy.profiles[p];
+        fprintf(f, "\n%starget = %s\n", PROFILE_PREFIX[p], r->target);
+        for (int field = PF_PORT; field < PF_COUNT; field++)
+            fprintf(f, "%s%s = %d\n", PROFILE_PREFIX[p], PROFILE_KEYS[field], *profile_int(r, field));
+    }
     int ok=!ferror(f);
     if(fclose(f)!=0)ok=0;
     if(ok&&MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return 1;
