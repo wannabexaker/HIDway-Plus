@@ -76,8 +76,8 @@ public static class HidwaySetupChrome {
    <StackPanel x:Name="FinishPage" Visibility="Collapsed">
     <TextBlock Text="Windows installation complete" FontSize="22"/>
     <TextBlock x:Name="Summary"/>
-    <TextBlock Text="1. Open HIDway and set Target to the Pi LAN/Tailscale IPv4, UDP port 47800 (unless changed on the relay). Save. Configure matching encryption keys if your relay requires them."/>
-    <TextBlock Text="2. In Input options select Remote PC or Gaming PC. Select physical, touchpad and/or virtual sources as needed. Gaming PC capture accepts virtual input and excludes the returned Pico input."/>
+    <TextBlock Text="1. Open HIDway and, on the Connection tab, set the relay address to the Pi LAN/Tailscale IPv4, UDP port 47800 (unless changed on the relay). Save. Configure matching encryption keys if your relay requires them."/>
+    <TextBlock Text="2. On the Input tab select Remote PC or Gaming PC. Select physical, touchpad and/or virtual sources as needed. Gaming PC capture accepts virtual input and excludes the returned Pico input."/>
     <TextBlock Text="3. Put Input Monitor in front on the target PC. ARM from the sending PC. Check keys, Left/Right/Middle/X1/X2 and wheel rotation separately. PANIC releases the target."/>
     <TextBlock Text="4. For repeatable tests, record a short sequence in Monitor, Stop/Save, then Replay in HIDway. Replay requires confirmation and starts after 3 seconds. Keep the target test window ready."/>
     <WrapPanel><Button x:Name="Launch" Content="Open HIDway"/><Button x:Name="Monitor" Content="Open Input Monitor"/><Button x:Name="Guide" Content="Open complete guide"/></WrapPanel>

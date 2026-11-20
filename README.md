@@ -55,6 +55,8 @@ if a keyboard and mouse were plugged in locally.
 | **Gaming PC** | on the PC the Pico is plugged into | virtual input arriving there (Moonlight, AnyDesk) back through the Pico, as real USB input on that same PC |
 
 **Control**
+- One window with four tabs: Control, Connection, Input and Tools. ARM, Pico on this PC and PANIC stay visible on every tab.
+- Remote PC and Gaming PC are two saved profiles, each with its own relay address, outputs and sources.
 - ARM / disarm with a button, a floating badge, the tray menu or a global hotkey (`Ctrl+Shift+F12`); PANIC releases everything at once (`Ctrl+Alt+Shift+End`).
 - **Pico on this PC**: one click selects the Gaming PC route after checking that the Pico is really connected there. It never arms.
 - Connection status in the window: relay reachability, round-trip time, loss, send rate, whether the target is on, and Wake-on-LAN when the relay is set up for it.

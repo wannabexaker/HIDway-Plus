@@ -39,8 +39,8 @@ For the confirmed AION2 same-PC setup, the game was elevated: HIDway also needed
 an explicitly approved **Run as administrator** launch on the Gaming PC. Accept
 the normal Windows UAC prompt yourself. This is a per-launch requirement, not a
 change to UAC or an automatic elevated startup. After launch, verify the Pi relay,
-click **Pico on this PC** beside ARM, and enable ARM when ready. The same preset
-is available inside Input options as **Use Pico on this PC**. Keep laptop HIDway
+click **Pico on this PC** beside ARM, and enable ARM when ready. The same route
+can be chosen on the Input tab as **Gaming PC**. Keep laptop HIDway
 closed for this route. Laptop Moonlight should use relative/game mouse mode;
 its **Optimize mouse for remote desktop instead of games** option should be off.
 The corrected setup was confirmed by the user.

@@ -26,21 +26,43 @@ mouse classification/deduplication guess has been removed. A driver emitting
 both local Raw Input and injected copies needs specific validation; flags do
 not identify applications or correlate every possible driver.
 
-## Input options
+## The window: four tabs
 
-Open **Input options** with the route button in the SETTINGS row: it shows the
-route in use, **Remote PC...** or **Gaming PC...**. Opening it disarms; close it
-before ARM. **Apply and save** stores the choices; **Cancel**, Esc or the
-title-bar close leave everything as it was. Button, Repeat source and Repeat
-clicks/sec are greyed out, with their values kept, while **Hold to repeat** is
-not ticked.
+The main window has four tabs. **ARM**, **Pico on this PC** and **PANIC** stay
+at the bottom of every tab.
+
+| Tab | What is on it |
+|---|---|
+| **Control** | Connection status (reachability, round-trip time, loss, rate, whether the target is on), whether the Pico is connected to this PC, the route in use and the live input readout |
+| **Connection** | Relay address, port, send rate and auto-disarm time, with **Save** |
+| **Input** | The route (Remote PC or Gaming PC), keyboard and mouse output, the sources, the Gaming PC pointer, hold-to-repeat and the virtual click limit, with **Apply and save** |
+| **Tools** | Input Monitor, replay of a recording, updates and the recent-input list |
+
+Remote PC and Gaming PC are two profiles. Each keeps its own relay address,
+outputs, sources, pointer and repeat settings, so switching the route brings
+back what was last saved for it. In `hidway.ini` the top-level keys describe
+the route in use and `remote.*` / `gaming.*` keys hold the two profiles; a file
+from an earlier version loads with every value kept.
+
+Choices on the Input tab take effect with **Apply and save**, which disarms
+first; edits that were not applied are dropped when you leave the tab. An
+invalid value on the Connection or Input tab is refused with a message in the
+window and nothing is changed. Button, Repeat source and Repeat clicks/sec are
+greyed out, with their values kept, while **Hold to repeat** is not ticked. On
+the Gaming PC route Physical and Touchpad are not available and Virtual /
+remote is always on.
+
+The Control tab's **Pico** line reads *On this PC*, *Partly detected* or *Not
+on this PC*. It is a display only and never changes the route or arms.
 
 **Pico on this PC**, beside ARM on the main window, is a one-click preset for
 the Gaming PC with Pico USB
-connected to it. It saves Gaming PC mode, virtual input enabled, native pointer,
-keyboard/mouse output enabled and hold-to-repeat off. Physical/touchpad source
-preferences are retained for returning to Remote PC mode. It never arms.
-The same action remains available as **Use Pico on this PC** in Input options.
+connected to it. It selects the Gaming PC profile and saves it. A new profile
+starts with virtual input enabled, native pointer, keyboard/mouse output
+enabled and hold-to-repeat off; after that it keeps what you saved for it.
+The Remote PC profile keeps its own source choices. It never arms.
+Selecting **Gaming PC** on the Input tab and applying does the same without
+the check that the Pico is connected.
 The main button is disabled while ARMED; a queued click cannot stop or change
 an active capture/replay. Unsaved relay address/port edits must be saved first.
 Success or a missing-device/address/save error appears in the Live Input card,
