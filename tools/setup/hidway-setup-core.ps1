@@ -80,7 +80,10 @@ function Test-HidwayInstalledHere([string]$Folder,[string]$PackageRoot,[string]$
     # True when the chosen folder is the registered installation, the folder the wizard itself runs from, and the tools are there.
     try {
         $chosen = [IO.Path]::GetFullPath($Folder).TrimEnd('\'); $here = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
-        return $Registered -and $chosen -ieq $here -and $Registered.TrimEnd('\') -ieq $here -and (Test-Path -LiteralPath (Join-Path $here 'hidway-client.exe') -PathType Leaf)
+        if ($chosen -ine $here -or -not (Test-Path -LiteralPath (Join-Path $here 'hidway-client.exe') -PathType Leaf)) { return $false }
+        # Registered by the wizard, or a copy that already has its own settings (Setup.cmd and portable copies register nothing).
+        # A freshly extracted download has only hidway.ini.example, so it is not mistaken for an installation.
+        return ($Registered -and $Registered.TrimEnd('\') -ieq $here) -or (Test-Path -LiteralPath (Join-Path $here 'hidway.ini') -PathType Leaf)
     } catch { return $false }
 }
 function Get-HidwayDefaultSerial([string]$Uart) {
@@ -111,7 +114,9 @@ function Get-HidwayTailscaleIPv4([string]$Exe,[int]$TimeoutMs=3000) {
 function Set-HidwaySunshineInputOff([string]$Conf) {
     # Sunshine's own keyboard/mouse/controller off. Other lines are kept; an existing file is backed up first.
     if (Test-Path -LiteralPath $Conf -PathType Leaf) {
-        Copy-Item -LiteralPath $Conf -Destination ($Conf+'.bak-'+(Get-Date -Format yyyyMMdd-HHmmss)) -ErrorAction Stop
+        $backup = $Conf+'.bak-'+(Get-Date -Format yyyyMMdd-HHmmss-fff)
+        if (Test-Path -LiteralPath $backup) { $backup += '-'+[guid]::NewGuid().ToString('N').Substring(0,6) }
+        [IO.File]::Copy($Conf,$backup,$false) # never over an earlier backup
         $lines = @([IO.File]::ReadAllLines($Conf) | Where-Object { $_ -notmatch '^\s*(keyboard|mouse|controller)\s*=' })
     } else {
         $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($Conf)) -Force; $lines = @()
@@ -234,6 +239,11 @@ function Test-HidwayIPv4([string]$Value) {
 function Get-HidwaySshTarget([string]$PiHost,[string]$PiUser) {
     if ($PiHost -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}\z' -or $PiHost.Contains('..') -or $PiUser -notmatch '^[a-z_][a-z0-9_-]{0,31}\z') { throw 'Enter a hostname/IPv4 and a Linux username. Spaces and shell commands are not allowed.' }
     return "$PiUser@$PiHost"
+}
+function Get-HidwayRelayInstallCommand([string]$Remote,[string]$RelayIP,[string]$SenderIP,[string]$Uart,[string]$SerialOption) {
+    # One remote shell line, passed to ssh as ONE argument: install, remove the uploaded copy whatever the result, keep the installer's exit code.
+    if ($Remote -notmatch '^\.cache/hidway-setup-[0-9a-f]{32}\z') { throw 'Invalid remote setup directory.' }
+    return "sudo bash $Remote/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind $RelayIP --allow-add $SenderIP --uart $Uart $SerialOption; hidway_rc=`$?; rm -rf -- $Remote; exit `$hidway_rc"
 }
 function Get-HidwayPicoFile([string]$Source,[string]$Board,[string]$Drive) {
     if ($Board -notin @('pico','pico_w','pico2','pico2_w')) { throw 'Choose the exact Pico board.' }

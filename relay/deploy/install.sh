@@ -336,8 +336,13 @@ full_install() {
         say "using the relay files of the checkout: ${deploy#"$ROOT"}"
     fi
 
+    # --serial-default: first install only, and never over an explicit --serial.
     if [[ -n $SERIAL_DEFAULT && ! -e $ETC/hidwayd.conf ]]; then
-        CONF_KV+=("HIDWAY_SERIAL=$SERIAL_DEFAULT")
+        local kv explicit_serial=0
+        for kv in ${CONF_KV[@]+"${CONF_KV[@]}"}; do
+            if [[ $kv == HIDWAY_SERIAL=* ]]; then explicit_serial=1; fi
+        done
+        if [[ $explicit_serial == 0 ]]; then CONF_KV+=("HIDWAY_SERIAL=$SERIAL_DEFAULT"); fi
     fi
 
     say "configuration"

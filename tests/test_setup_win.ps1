@@ -97,7 +97,20 @@ foreach($name in @('hidway-setup-gui.ps1','hidway-pi-setup.ps1')){
     Check ($text.Contains('[a-zA-Z0-9_./-]+\z') -and -not $text.Contains('[a-zA-Z0-9_./-]+$''')) "serial check anchors with \z in $name"
 }
 $piText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\tools\setup\hidway-pi-setup.ps1'))
-Check ($piText.Contains('--serial-default') -and $piText.Contains('rm -rf -- ')) 'Pi setup passes --serial-default and removes its remote cache directory'
+Check ($piText.Contains('--serial-default') -and $piText.Contains('Get-HidwayRelayInstallCommand')) 'Pi setup passes --serial-default and builds the install command in one place'
+# The remote install line must reach ssh as ONE argument. Building it with "..."+'...' on the ssh line once split it and sent install.sh a stray "+".
+$remoteDir='.cache/hidway-setup-'+('0123456789abcdef'*2)
+$command=Get-HidwayRelayInstallCommand $remoteDir '100.64.1.2' '100.64.9.9' 'usb' '--serial-default /dev/ttyUSB0'
+$expected='sudo bash '+$remoteDir+'/install.sh --repo https://github.com/wannabexaker/HIDway-.git --ref main --bind 100.64.1.2 --allow-add 100.64.9.9 --uart usb --serial-default /dev/ttyUSB0; hidway_rc=$?; rm -rf -- '+$remoteDir+'; exit $hidway_rc'
+Check ($command -ceq $expected) 'relay install command: install, remove the uploaded copy, keep the exit code'
+$argProbe=Join-Path $base 'arg-probe.cmd';[IO.File]::WriteAllText($argProbe,"@echo off`r`necho ARGS=[%*]`r`n")
+$seen=(& $argProbe -t -- 'pi@host' $command | Out-String).Trim()
+Check ($seen -ceq ('ARGS=[-t -- pi@host "'+$command+'"]')) 'relay install command reaches a native program as one argument'
+Check ($piText -match '(?m)-- \$target \$command\r?$' -and -not $piText.Contains('"+''')) 'Pi setup hands ssh the command as a single variable'
+foreach($bad in @('.cache/hidway-setup-xyz','/tmp/x','.cache/hidway-setup-'+('0'*32)+'; rm -rf ~')){
+    $refused=$false;try{$null=Get-HidwayRelayInstallCommand $bad '100.64.1.2' '100.64.9.9' 'usb' '--serial /dev/ttyUSB0'}catch{$refused=$true}
+    Check $refused "relay install command refuses the remote directory '$bad'"
+}
 # OneDrive is refused with a clear notice; real junctions keep their own message; short paths say what is required.
 $savedOneDrive=$env:OneDrive;$fakeOneDrive=Join-Path $base 'OneDriveFake';$env:OneDrive=$fakeOneDrive
 try{
@@ -117,9 +130,14 @@ $message='';try{$null=Assert-HidwayInstallPath 'D:\HID'}catch{$message=$_.Except
 Check ($message -match 'at least 8 characters' -and $message -notmatch 'drive root') 'short path says what is required'
 $message='';try{$null=Assert-HidwayInstallPath 'D:\'}catch{$message=$_.Exception.Message}
 Check ($message -match 'drive root') 'drive root still named as such'
-# Wizard started from the installed folder: only the registered folder it runs from counts.
+# Wizard started from the installed folder: the folder it runs from counts when it is registered or already has its own settings.
 Check (Test-HidwayInstalledHere $source $source $source) 'installed folder recognised'
-Check (-not (Test-HidwayInstalledHere $source $source '')) 'unregistered folder is not "installed here"'
+Check (-not (Test-HidwayInstalledHere $source $source '')) 'a fresh extracted download is not "installed here"'
+$portable=Join-Path $base 'portable-copy';New-Item -ItemType Directory -Path $portable | Out-Null
+[IO.File]::WriteAllText((Join-Path $portable 'hidway-client.exe'),'x')
+Check (-not (Test-HidwayInstalledHere $portable $portable '')) 'tools without settings are not "installed here"'
+[IO.File]::WriteAllText((Join-Path $portable 'hidway.ini'),"target = 100.100.100.100`n")
+Check (Test-HidwayInstalledHere $portable $portable '') 'an unregistered copy with its own hidway.ini (Setup.cmd, portable) is recognised'
 Check (-not (Test-HidwayInstalledHere $source $install $source)) 'a different folder is not "installed here"'
 Check (-not (Test-HidwayInstalledHere (Join-Path $base 'nowhere') (Join-Path $base 'nowhere') (Join-Path $base 'nowhere'))) 'folder without tools is not "installed here"'
 Check (-not (Test-HidwayInstalledHere '' $source $source)) 'empty folder text is handled'
@@ -144,6 +162,8 @@ $backups=@(Get-ChildItem -LiteralPath $base -Filter 'sunshine.conf.bak-*')
 Check ($backups.Count -eq 1 -and [IO.File]::ReadAllText($backups[0].FullName) -eq $original) 'Sunshine backup is the original file'
 Set-HidwaySunshineInputOff $sun
 Check (([regex]::Matches([IO.File]::ReadAllText($sun),'keyboard = disabled')).Count -eq 1) 'Sunshine edit is idempotent'
+$backups=@(Get-ChildItem -LiteralPath $base -Filter 'sunshine.conf.bak-*' | Sort-Object Name)
+Check ($backups.Count -eq 2 -and @($backups | Where-Object { [IO.File]::ReadAllText($_.FullName) -eq $original }).Count -eq 1) 'a second Sunshine run adds a backup and never overwrites the first'
 $sunNew=Join-Path $base 'sun-new\config\sunshine.conf';Set-HidwaySunshineInputOff $sunNew
 Check ((Test-Path $sunNew) -and -not (Test-Path ($sunNew+'.bak-*')) -and [IO.File]::ReadAllText($sunNew).Contains('mouse = disabled')) 'Sunshine without a config creates one'
 Write-Output "Setup: $script:checks checks PASS (isolated files/shortcuts/test registry key; real installed apps, SSH and firmware unchanged)"

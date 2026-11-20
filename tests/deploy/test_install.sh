@@ -184,6 +184,18 @@ check "alone: --serial still forces the device" run_full "$work/alone/install.sh
 check "  serial changed" test "$(conf HIDWAY_SERIAL)" = /dev/ttyUSB1
 
 full_setup
+check "alone: --serial wins over --serial-default on a first install" run_full "$work/alone/install.sh" "${ARGS[@]}" --serial /dev/ttyACM0 --serial-default /dev/ttyUSB0
+check "  explicit device kept" test "$(conf HIDWAY_SERIAL)" = /dev/ttyACM0
+full_setup
+check "alone: same with the options the other way round" run_full "$work/alone/install.sh" "${ARGS[@]}" --serial-default /dev/ttyUSB0 --serial /dev/ttyACM0
+check "  explicit device kept" test "$(conf HIDWAY_SERIAL)" = /dev/ttyACM0
+# A stray extra word must stop the installer before it changes anything
+# (the Windows wizard once sent one after a mis-built ssh command).
+full_setup
+check "alone: stray trailing argument is refused" not run_full "$work/alone/install.sh" "${ARGS[@]}" --serial-default /dev/ttyUSB0 +
+check "  no configuration written" not test -e "$R/etc/hidway/hidwayd.conf"
+
+full_setup
 export STUB_EMPTY=1
 check "alone: checkout without relay files fails, fresh root" not run_full "$work/alone/install.sh" "${ARGS[@]}"
 check "  ...with a clear message" out_has "neither next to install.sh nor in the checkout"

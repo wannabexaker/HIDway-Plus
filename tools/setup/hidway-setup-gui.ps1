@@ -159,7 +159,7 @@ function Show-Page {
     $ui.SenderLabel.Text=if($ui.Gaming.IsChecked){'Gaming PC IPv4 (this PC sends virtual input through the relay)'}else{'Remote PC IPv4 (sending laptop / PC allowed by the relay)'}
     if($script:step -eq 2 -and -not $script:tailscaleTried -and -not $ValidateOnly){ # renders/validation never start another program
         $script:tailscaleTried=$true
-        if(-not $ui.Sender.Text.Trim()){$ip=Get-HidwayTailscaleIPv4 (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe');if($ip){$ui.Sender.Text=$ip}}
+        if(-not $ui.Sender.Text.Trim()){$ip=Get-HidwayTailscaleIPv4 (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe') 1500;if($ip){$ui.Sender.Text=$ip}}
     }
     if($script:step -eq 4){Find-BootselDrive -Auto}
 }
@@ -184,7 +184,7 @@ $ui.Next.Add_Click({Invoke-UiAction {
     switch($script:step){
         0 {if(-not $ui.Accept.IsChecked){throw 'Accept the license to continue.'}}
         1 {
-            if(Test-InstalledHere){$script:installed=Get-HidwayInstallationFolder} # started from the installed folder: nothing to install
+            if(Test-InstalledHere){$script:installed=Assert-HidwayInstallPath $PSScriptRoot} # started from the installed folder: nothing to install
             else{
                 if(-not $script:firstInstall){$script:firstInstall=-not(Test-Path -LiteralPath (Join-Path $ui.Folder.Text 'hidway.ini'))} # stays true on Back/Next
                 $script:installed=Install-HidwayPackage $PSScriptRoot $ui.Folder.Text -Desktop:([bool]$ui.Desktop.IsChecked)
